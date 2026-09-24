@@ -1,6 +1,6 @@
 # Client API reference
 
-This reference describes the inherited protocol and fork compatibility. Start with the [installation guide](../README.md). Agent clients should enable `--agent-service-model`; the bare CLI retains legacy defaults.
+This reference describes the proxy's Chat Completions API and compatibility behavior. Start with the [installation guide](../README.md). Agent clients should enable `--agent-service-model`; the bare CLI retains legacy defaults.
 
 ## Authentication
 
@@ -19,7 +19,7 @@ Notes:
 - Completions return `app_server_not_ready` and `/ready` returns 503 until login finishes.
 - The login deadline is fixed at 5 minutes.
 - `--sync-auth never` leaves the proxy's Codex home untouched, including when the source has newer credentials. The only other mode is the default, `always`.
-- The fork never writes credentials back to the main Codex home.
+- The proxy never writes credentials back to the main Codex home.
 - ChatGPT refresh tokens are single-use. Sharing copies of one login between Codex and the proxy can invalidate a stored refresh token. If this happens, sign in locally and restart; for separately authenticated operation explicitly choose `--auth-mode independent`.
 - Treat authorization URLs and device codes as credentials. Plaintext proxy logs may contain them, so keep log captures local and never paste them into issues without reviewing the full contents.
 - The proxy's login lives in its Codex home; deleting `~/.codex-openai-proxy/codex-home` signs the proxy out without touching the Codex CLI's own `~/.codex` session.
@@ -50,7 +50,7 @@ The live budget guard lets a root final answer without tool work finish naturall
 
 ## Use an OpenAI client
 
-Point any OpenAI-compatible client at `http://127.0.0.1:8787/v1`. No API key is required; use any placeholder if your library demands one.
+Point any OpenAI-compatible client at `http://127.0.0.1:8787/v1`. The agent-service profile accepts requests without an API key; a managed key enables usage attribution when the console is configured. The local bridge profile requires a bearer key. Use any placeholder only if your library demands one and you are using the agent-service profile without a managed key.
 
 ```js
 import OpenAI from "openai";
@@ -287,7 +287,7 @@ App-server `codexErrorInfo: "serverOverloaded"` — the failure behind Codex's "
 ## Safety and limits
 
 - The listener accepts loopback only (`127.0.0.1`, `::1`, `localhost`); non-loopback `Host` authorities and any request with an `Origin` header are rejected.
-- The recommended agent-service and local compatibility profiles require a client bearer key on every model API route, including health checks. The bare CLI without either profile retains upstream unauthenticated behavior; do not use it as an agent service. See the [security model](security.md).
+- The local bridge profile requires a client bearer key on every model API route, including health checks. The agent-service profile and bare CLI accept requests without a key. A managed key in the agent-service profile provides usage attribution, not access control. See the [security model](security.md).
 - Structured JSON logs go to stderr in plaintext and are not redacted. Any level may contain filesystem paths, login URLs, tokens, prompts, child stderr, or tool details; treat every log capture as sensitive.
 - Successful `/health` and `/ready` probes — including the 503 returned before startup finishes — are logged at debug so a polling health checker stays out of default-level output. Rejected or failed requests to those paths are still logged at info.
 

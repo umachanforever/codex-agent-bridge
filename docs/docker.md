@@ -54,7 +54,9 @@ The CLI validates all three values at startup. `BRIDGE_MAX_REQUESTS=0` disables
 the concurrency limit and should be used only for a controlled local workload.
 Requests beyond a positive limit receive HTTP 429 `overloaded`.
 
-The model API requires a client Bearer key. The management console uses a
+The default agent-service profile accepts model API requests without a key;
+managed Bearer keys provide usage attribution. Set `BRIDGE_PROFILE=local` to
+require a client Bearer key. The management console uses a
 separate administrator password stored in the bridge state volume. Docker
 retains password authentication, including when accessed through the gateway.
 

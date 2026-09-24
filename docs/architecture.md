@@ -31,14 +31,11 @@ The shared completion seam in `src/sessions/completion.ts` validates request pol
 and starts a Codex turn for both Chat Completions output and the management price
 lookup. The latter consumes bounded final text directly and does not call the
 proxy's own HTTP endpoint. HTTP serialization remains in `src/http/chat.ts`.
-This architecture still includes some inherited modules that are being replaced with independently designed ones.
-
 The HTTP listener opens before app-server authentication completes. `/health` reports that the proxy process is listening; `/ready` and model or chat requests require an authenticated, initialized app-server transport. If the child exits, the supervisor withdraws readiness and makes bounded restart attempts. It installs a replacement transport only after startup succeeds.
 
 The JSON-RPC transport frames app-server output from byte chunks, correlates
-request IDs, and settles pending calls on cancellation or stream closure. Its
-interface remains unchanged during the source rewrite; framing and lifecycle
-behavior is covered by offline transport tests.
+request IDs, and settles pending calls on cancellation or stream closure.
+Offline transport tests cover framing and lifecycle behavior.
 
 ## Management module
 

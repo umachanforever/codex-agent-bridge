@@ -4,7 +4,7 @@ This guide is for contributors to `codex-agent-bridge`. Installation belongs in 
 
 ## Requirements
 
-- Node.js 20 or newer; Node.js 24 is the primary supported LTS
+- Node.js 22 or newer; Node.js 24 is recommended
 - npm
 - A ChatGPT login only for opt-in live tests
 
@@ -21,12 +21,14 @@ The maintained TypeScript modules are grouped by domain so the public HTTP contr
 
 | Path | Responsibility |
 | --- | --- |
-| `src/bin.ts` | Root executable shim that preserves the published `dist/bin.js` entry point |
+| `src/bin.ts` | Executable shim for the package's `dist/bin.js` entry point |
 | `src/cli/` | CLI lifecycle, authentication, app-server recovery, and shutdown |
 | `src/core/` | CLI configuration, loopback/path validation, and structured logging |
 | `src/app-server/` | Child-process ownership, authentication flows, and JSON-RPC transport |
 | `src/http/` | HTTP routing, Chat Completions translation, SSE output, and OpenAI-shaped errors |
 | `src/continuation/` | Durable response mapping, pending tool coordination, and continuation validation |
+| `src/admin/` | Web management, accounting, and administrator sessions |
+| `src/sessions/` | Shared completion setup for HTTP requests and internal callers |
 
 `test/` mirrors the maintained source domains under `test/cli/`, `test/core/`, `test/app-server/`, `test/http/`, and `test/continuation/`. Cross-domain protocol contract and offline spike coverage lives under `test/contract/` and `test/spike/`. Shared fake backends, repository-path helpers, and typed protocol fixture builders live under `test/support/`.
 
@@ -58,7 +60,7 @@ From a repository checkout, `npm run models:live` lists full app-server model me
 
 ## Updating upstream Codex
 
-Use the repository-local `$update-codex` skill (`.agents/skills/update-codex/SKILL.md`) to update the pin and handle compatibility repairs. Its automated first attempt is:
+Use the repository's update command to update the pin and check compatibility. Its first attempt is:
 
 ```sh
 npm run update:codex
@@ -66,13 +68,13 @@ npm run update:codex
 
 This resolves the npm `latest` release to an exact version; pass `-- <exact-version>` to choose a target. The command requires clean package manifests, generated protocol trees, and `protocol/VERSION.json`, installs with dependency lifecycle scripts disabled, regenerates the contract, and runs formatting, lint, protocol drift, offline tests, and packed-CLI checks. It makes zero live model calls. Installation requires registry access; all subsequent gates are offline.
 
-Failures return a nonzero exit code and leave the attempted update available for agent inspection. The script does not launch an agent: invoke `$update-codex` to diagnose and repair compatibility, then run `npm run update:codex -- --check` to repeat validation without reinstalling or regenerating the working tree. Installation or generation failures stop immediately; independent validation gates all run even if one fails.
+Failures return a nonzero exit code and leave the attempted update available for inspection. Diagnose and repair compatibility, then run `npm run update:codex -- --check` to repeat validation without reinstalling or regenerating the working tree. Installation or generation failures stop immediately; independent validation gates all run even if one fails.
 
 Even a green run requires review of upstream protocol changes, policy behavior, existing proxy homes and continuation stores, and the version-specific Responses Lite workaround. Record the decision and persistence consequence in [compatibility](compatibility.md) and update current-version documentation before release. The normal pull-request OS matrix remains required; live verification is a separate opt-in below.
 
 ## Continuous integration
 
-Required CI runs `npm ci`, then the full `npm run check` on Linux and `npm test` on macOS and Windows. Formatting, linting, and protocol regeneration produce platform-independent results, so they are gated once rather than three times; every platform still builds, type-checks, runs the whole offline suite, and tests the packed CLI. Linux, macOS, and Windows all exercise the primary Node.js 24 LTS. Node.js 20 is the minimum supported line; the `engines` range accepts newer majors, and matrix lines are added as they are validated.
+Required CI runs `npm ci`, then the full `npm run check` on Linux and `npm test` on macOS and Windows. Formatting, linting, and protocol regeneration produce platform-independent results, so they are gated once rather than three times; every platform still builds, type-checks, runs the whole offline suite, and tests the packed CLI. Linux, macOS, and Windows all exercise Node.js 24. Node.js 22 is the minimum supported line; the `engines` range accepts newer majors, and matrix lines are added as they are validated.
 
 CI sets `CODEX_TEST_COVERAGE` explicitly. The primary Node.js 24 Linux job alone runs coverage and its floors and publishes the offline `coverage/` directory; the other operating-system and Node.js compatibility jobs run the same tests without redundant instrumentation. Omitting the variable locally keeps coverage enabled. Coverage is limited to maintained source. Pull requests never run the live suite.
 

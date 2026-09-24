@@ -1,6 +1,6 @@
 # Documentation
 
-The [root README](../README.md) introduces installation and agent-client setup. Start with [web management](admin.md) or [troubleshooting](troubleshooting.md). The detailed [client API reference](client-api.md) covers Chat Completions and nonstandard `x_codex` extensions; [agent compatibility](compatibility.md) describes fork behavior.
+The [root README](../README.md) introduces installation and agent-client setup. Start with [web management](admin.md) or [troubleshooting](troubleshooting.md). The detailed [client API reference](client-api.md) covers Chat Completions and nonstandard `x_codex` extensions; [Codex compatibility](compatibility.md) describes the pinned app-server contract.
 
 | Topic                                                | Read it for                                                                                       |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------- |

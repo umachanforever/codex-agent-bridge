@@ -36,7 +36,7 @@ BRIDGE_TEST_IMAGE=codex-agent-bridge:candidate node scripts/docker-smoke.mjs
 2. 明确批准发布后才移除 `private`，配置当前仓库专属的发布身份与受保护环境。
 3. 对最终 commit 重新执行检查，核对 tarball 的文件允许清单与校验和。
 4. 发布不可变版本，记录支持的平台、Codex 版本、限制和升级步骤。
-5. 不覆盖既有 tag，不复用上游版本身份；失败时核对注册表状态再处理。
+5. 不覆盖既有 tag；失败时核对注册表状态再处理。
 
 ## 升级与回滚
 

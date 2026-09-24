@@ -1,6 +1,6 @@
 # Security model
 
-`codex-openai-proxy` is a single-user, localhost-only process. The upstream strict profile has no bearer gate; the fork's bridge profiles require client keys and optionally offer a separately authenticated web console. None is a multi-tenant isolation boundary. The caller, proxy, and Codex child are expected to be trusted. See [web management](admin.md) for encryption, browser authentication and residual full-access-tool risks.
+`codex-agent-bridge` is a single-user, localhost-only process. The local bridge profile requires a client bearer key; the agent-service profile accepts requests without one. Managed keys can attribute requests when the web console is enabled, but they do not gate the agent-service profile. The optional web console has separate administrator authentication. None is a multi-tenant isolation boundary. The caller, proxy, and Codex child are expected to be trusted. See [web management](admin.md) for encryption, browser authentication and residual full-access-tool risks.
 
 ## Threat model and controls
 

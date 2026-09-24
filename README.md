@@ -46,20 +46,14 @@ npm --prefix web ci
 npm run build
 npm run build:web
 
-# First creation only. Do not rerun when the key already exists.
-mkdir -p secrets
-chmod 700 secrets
-(umask 077; node --input-type=module -e 'import { randomBytes } from "node:crypto"; import { writeFileSync } from "node:fs"; writeFileSync("secrets/bridge-token", "sk-" + randomBytes(32).toString("base64url") + "\n", { flag: "wx", mode: 0o600 });')
-
-CODEX_BRIDGE_TOKEN_FILE="$PWD/secrets/bridge-token" \
-  node dist/bin.js serve --agent-service-model gpt-6-luna --admin-port 8789
+node dist/bin.js serve --agent-service-model gpt-6-luna --admin-port 8789
 ```
 
-Keep the final command running. The key generation and environment variable examples use a POSIX shell; on Windows, set the same environment variable in PowerShell before running the `node` command.
+Keep the final command running.
 
 - API base URL: `http://127.0.0.1:8787/v1`
 - Web console: `http://127.0.0.1:8789/admin/`
-- Client API key: the contents of `secrets/bridge-token`, or a separate key created in the console.
+- Client API key: an optional key created in the console for usage attribution. The agent-service profile accepts requests without one.
 - Admin password: generated on first start in `<state-dir>/admin/admin-token`. Use `node dist/bin.js --help` to find the default state directory. Read it privately on the local machine; it is not a client API key.
 - Model: the example uses `gpt-6-luna`. In the console settings, choose a model available to your account from the model list.
 
@@ -91,14 +85,14 @@ The desktop variant uses the fixed container names `codex-agent-bridge-api` and 
 
 Choose an OpenAI compatible Chat Completions endpoint in your client:
 
-| Setting   | Value                                                                               |
-| --------- | ----------------------------------------------------------------------------------- |
-| Base URL  | `http://127.0.0.1:8787/v1`                                                          |
-| API key   | A `sk-` key issued by this proxy, not Codex login credentials or the admin password |
-| Model     | An available model ID from the console or `GET /v1/models`                          |
-| Streaming | Supported; structured JSON is sent after completion and validation                  |
+| Setting   | Value                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------- |
+| Base URL  | `http://127.0.0.1:8787/v1`                                                                            |
+| API key   | An optional `sk-` key issued by this proxy for usage attribution in the default agent-service profile |
+| Model     | An available model ID from the console or `GET /v1/models`                                            |
+| Streaming | Supported; structured JSON is sent after completion and validation                                    |
 
-`/health`, `/ready`, and `/v1/models` require a client Bearer key. Checking these endpoints does not generate a model response. A client in another container cannot reach the host through its own `127.0.0.1`; the default deployment does not expose a cross-container or public endpoint.
+The default agent-service profile accepts `/health`, `/ready`, `/v1/models`, and completion requests without a client key. Set `BRIDGE_PROFILE=local` in Docker, or use `--local-bridge-model` natively, to require a Bearer key on every model API route. Checking the probe and model-list endpoints does not generate a model response. A client in another container cannot reach the host through its own `127.0.0.1`; the default deployment does not expose a cross-container or public endpoint.
 
 ## Security and operations
 

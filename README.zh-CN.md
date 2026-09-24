@@ -44,20 +44,14 @@ npm --prefix web ci
 npm run build
 npm run build:web
 
-# 仅首次创建。若 key 已存在，请勿重复执行。
-mkdir -p secrets
-chmod 700 secrets
-(umask 077; node --input-type=module -e 'import { randomBytes } from "node:crypto"; import { writeFileSync } from "node:fs"; writeFileSync("secrets/bridge-token", "sk-" + randomBytes(32).toString("base64url") + "\n", { flag: "wx", mode: 0o600 });')
-
-CODEX_BRIDGE_TOKEN_FILE="$PWD/secrets/bridge-token" \
-  node dist/bin.js serve --agent-service-model gpt-6-luna --admin-port 8789
+node dist/bin.js serve --agent-service-model gpt-6-luna --admin-port 8789
 ```
 
-保持最后一条命令持续运行。生成 key 与环境变量的示例使用 POSIX shell；在 Windows 上请在运行 `node` 命令前，于 PowerShell 中设置相同的环境变量。
+保持最后一条命令持续运行。
 
 - API 基础地址：`http://127.0.0.1:8787/v1`
 - Web 控制台：`http://127.0.0.1:8789/admin/`
-- 客户端 API Key：`secrets/bridge-token` 的内容，或在控制台中单独创建的 key。
+- 客户端 API Key：可选，可在控制台创建并用于用量归属。agent-service 模式允许不带 key 的请求。
 - 管理员密码：首次启动时生成于 `<state-dir>/admin/admin-token`。使用 `node dist/bin.js --help` 可查看默认 state 目录。请在本地机器上私密读取，它不是客户端 API Key。
 - 模型：示例使用 `gpt-6-luna`。在控制台设置中选择你账号可用的模型。
 
@@ -88,14 +82,14 @@ docker compose -f compose.yaml -f compose.local-auth.yaml ps
 
 在客户端中选择一个兼容 OpenAI 的 Chat Completions 端点：
 
-| 设置项   | 值                                                      |
-| -------- | ------------------------------------------------------- |
-| Base URL | `http://127.0.0.1:8787/v1`                              |
-| API key  | 本代理签发的 `sk-` key，而非 Codex 登录凭据或管理员密码 |
-| 模型     | 控制台或 `GET /v1/models` 给出的可用模型 ID             |
-| 流式     | 支持；结构化 JSON 在完成后经校验再发送                  |
+| 设置项   | 值                                                    |
+| -------- | ----------------------------------------------------- |
+| Base URL | `http://127.0.0.1:8787/v1`                            |
+| API key  | 默认 agent-service 模式下用于用量归属的可选 `sk-` key |
+| 模型     | 控制台或 `GET /v1/models` 给出的可用模型 ID           |
+| 流式     | 支持；结构化 JSON 在完成后经校验再发送                |
 
-`/health`、`/ready`、`/v1/models` 需要客户端 Bearer key。检查这些端点不会产生模型回复。其它容器中的客户端无法通过自身的 `127.0.0.1` 访问宿主机；默认部署不暴露跨容器或公网端点。
+默认 agent-service 模式允许不带客户端 key 访问 `/health`、`/ready`、`/v1/models` 和补全接口。Docker 设置 `BRIDGE_PROFILE=local`，或原生运行时使用 `--local-bridge-model`，才会要求所有模型 API 路由提供 Bearer key。检查健康状态及模型列表不会产生模型回复。其它容器中的客户端无法通过自身的 `127.0.0.1` 访问宿主机；默认部署不暴露跨容器或公网端点。
 
 ## 安全与运维
 

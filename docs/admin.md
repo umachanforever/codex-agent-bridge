@@ -65,14 +65,18 @@ address, filesystem root and execution permissions cannot be changed through the
 
 Managed client keys can be created, revealed, rotated and disabled. Lists show only
 prefixes. Revealing or rotating requires re-entering the administrator token. Rotation
-invalidates the old bearer; disabling rejects new requests, not work already executing.
+invalidates the old managed bearer; disabling stops accepting it for new requests,
+not work already executing. The agent-service profile still accepts those requests
+without a valid key but no longer attributes them to it. The local bridge profile
+requires another valid key.
 Keys are encrypted with AES-256-GCM; lookup uses SHA-256 digests. Back up `master.key`
 separately and privately along with the database; loss of the master fails closed.
 The file master protects a database-only leak, **not** compromise of the host account.
 
-The original environment/file-backed bridge key remains valid, is not displayed or
-managed in the key table, and its requests are grouped as `legacy`. Rotate that key
-through its original secret source. New per-agent keys are recommended for attribution.
+In the local bridge profile, the environment/file-backed bridge key remains valid,
+is not displayed or managed in the key table, and its requests are grouped as
+`legacy`. Rotate that key through its original secret source. New per-agent keys
+are recommended for attribution.
 Do not configure the same secret for admin login and API clients.
 
 The console sends its session bearer in `X-Admin-Session`, scoped by browser
