@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-openai-proxy.invalid/response-mapping.schema.json",
+  "title": "Durable continuation store",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "records"],
+  "properties": {
+    "version": { "const": 0 },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/record" }
+    }
+  },
+  "$defs": {
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["responseId", "threadId", "state", "model", "cwd", "toolsHash", "policyHash", "createdAt", "expiresAt"],
+      "properties": {
+        "responseId": { "type": "string", "minLength": 1 },
+        "threadId": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["ready", "pending_tool", "expired", "superseded"] },
+        "model": { "type": "string", "minLength": 1 },
+        "reasoningEffort": { "type": "string", "minLength": 1 },
+        "cwd": { "type": "string", "minLength": 1 },
+        "toolsHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "policyHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "createdAt": { "type": "number" },
+        "expiresAt": { "type": "number" },
+        "pendingCalls": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "$comment": "pendingCalls.callId values must be unique; runtime validation enforces this invariant.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["callId", "name", "arguments"],
+            "properties": {
+              "callId": { "type": "string", "minLength": 1 },
+              "name": { "type": "string", "minLength": 1 },
+              "arguments": { "type": "string" }
+            }
+          }
+        },
+        "usageTotal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"],
+          "properties": {
+            "inputTokens": { "type": "number", "minimum": 0 },
+            "cachedInputTokens": { "type": "number", "minimum": 0 },
+            "outputTokens": { "type": "number", "minimum": 0 },
+            "reasoningOutputTokens": { "type": "number", "minimum": 0 },
+            "totalTokens": { "type": "number", "minimum": 0 }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "pending_tool" } },
+            "required": ["state"]
+          },
+          "then": { "required": ["pendingCalls"] }
+        }
+      ]
+    }
+  }
+}
