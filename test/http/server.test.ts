@@ -1,0 +1,703 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import net from "node:net";
+import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "vitest";
+import {
+  parseServeOptions,
+  resolveServeOptions,
+  type ServeOptions,
+} from "../../src/core/config.js";
+import { createLogger } from "../../src/core/logger.js";
+import { UNRESTRICTED_POLICY_REQUIREMENTS } from "../../src/core/policy.js";
+import { createProxyServer, type ProxyServer } from "../../src/http/server.js";
+import { silentLogger } from "../support/logger.js";
+import {
+  protocolNotification,
+  protocolModel,
+  protocolResponse,
+  protocolThread,
+  protocolThreadStartResponse,
+  protocolTurn,
+} from "../support/protocol-fixtures.js";
+import { createFakeTransport, completeTurn } from "../support/transport.js";
+
+/** Builds safe ephemeral listener options for a server test. */
+async function options(
+  overrides: Partial<ServeOptions> = {},
+): Promise<ServeOptions> {
+  return {
+    ...(await resolveServeOptions(
+      parseServeOptions([
+        "--port",
+        "0",
+        "--state-dir",
+        join(tmpdir(), `codex-proxy-server-test-${process.pid}`),
+      ]),
+    )),
+    ...overrides,
+  };
+}
+
+/** Runs a test callback against an ephemeral proxy and always closes it. */
+async function withServer(
+  overrides: Partial<ServeOptions>,
+  run: (origin: string, proxy: ProxyServer) => Promise<void>,
+): Promise<void> {
+  const proxy = createProxyServer(await options(overrides), silentLogger);
+  const address = await proxy.listen();
+  try {
+    await run(
+      `http://${address.address.includes(":") ? `[${address.address}]` : address.address}:${address.port}`,
+      proxy,
+    );
+  } finally {
+    await proxy.close();
+  }
+}
+
+test("health is live while readiness remains false", async () => {
+  await withServer({}, async (origin, proxy) => {
+    let response = await fetch(`${origin}/health`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status: "ok" });
+    assert.match(response.headers.get("x-request-id") ?? "", /^[0-9a-f-]{36}$/);
+    response = await fetch(`${origin}/ready`);
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { status: "not_ready" });
+    proxy.setReady(true);
+    response = await fetch(`${origin}/ready`);
+    assert.equal(response.status, 200);
+  });
+});
+
+test("local bridge requires its bearer key on every route and fails closed at startup", async () => {
+  const previous = process.env.CODEX_BRIDGE_TOKEN;
+  const localOptions = await options({ localBridgeModel: "test-model" });
+  try {
+    delete process.env.CODEX_BRIDGE_TOKEN;
+    assert.throws(
+      () => createProxyServer(localOptions, silentLogger),
+      /CODEX_BRIDGE_TOKEN/,
+    );
+    process.env.CODEX_BRIDGE_TOKEN = "synthetic-test-key";
+    await withServer({ localBridgeModel: "test-model" }, async (origin) => {
+      for (const path of [
+        "/health",
+        "/ready",
+        "/v1/models",
+        "/v1/chat/completions",
+      ]) {
+        for (const authorization of [
+          undefined,
+          "Bearer wrong-key",
+          "Basic synthetic-test-key",
+        ]) {
+          const response = await fetch(`${origin}${path}`, {
+            headers: authorization ? { authorization } : {},
+          });
+          assert.equal(response.status, 401);
+          assert.equal(
+            ((await response.json()) as { error: { code: string } }).error.code,
+            "invalid_api_key",
+          );
+        }
+      }
+      const response = await fetch(`${origin}/health`, {
+        headers: { authorization: "Bearer synthetic-test-key" },
+      });
+      assert.equal(response.status, 200);
+      const health = (await response.json()) as {
+        backend: string;
+        active: number;
+        default_model: string;
+      };
+      assert.equal(health.backend, "civitas-app-server");
+      assert.equal(health.active, 0);
+      assert.equal(health.default_model, "test-model");
+    });
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_BRIDGE_TOKEN;
+    else process.env.CODEX_BRIDGE_TOKEN = previous;
+  }
+});
+
+test("every route rejects missing, malformed, and non-loopback Host headers", async () => {
+  await withServer({}, async (origin) => {
+    const url = new URL(origin);
+    const request = (host: string | undefined): Promise<http.IncomingMessage> =>
+      new Promise((resolve, reject) => {
+        const headers = host === undefined ? {} : { host };
+        const pending = http.request(
+          {
+            hostname: url.hostname,
+            port: url.port,
+            path: "/health",
+            method: "GET",
+            headers,
+            setHost: false,
+          },
+          resolve,
+        );
+        pending.once("error", reject);
+        pending.end();
+      });
+
+    const socket = net.connect(Number(url.port), url.hostname);
+    await once(socket, "connect");
+    socket.end("GET /health HTTP/1.0\r\n\r\n");
+    let raw = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => (raw += chunk));
+    await once(socket, "close");
+    assert.match(raw, /^HTTP\/1\.1 403 /);
+    assert.equal(
+      (
+        JSON.parse(raw.slice(raw.indexOf("\r\n\r\n") + 4)) as {
+          error: { code: string };
+        }
+      ).error.code,
+      "invalid_host_header",
+    );
+
+    for (const host of [
+      "evil.example",
+      "127.0.0.2",
+      "localhost:0",
+      "localhost:65536",
+      "localhost:not-a-port",
+    ]) {
+      const response = await request(host);
+      assert.equal(response.statusCode, 403);
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => (body += chunk));
+      await once(response, "end");
+      assert.equal(
+        (JSON.parse(body) as { error: { code: string } }).error.code,
+        "invalid_host_header",
+      );
+    }
+
+    for (const host of [
+      "localhost",
+      `localhost:${url.port}`,
+      "127.0.0.1",
+      `127.0.0.1:${url.port}`,
+      "[::1]",
+      `[::1]:${url.port}`,
+    ])
+      assert.equal((await request(host)).statusCode, 200);
+  });
+});
+
+test("every route rejects browser Origin headers", async () => {
+  await withServer({}, async (origin) => {
+    for (const [path, init] of [
+      ["/health", {}],
+      ["/ready", {}],
+      ["/v1/models", {}],
+      ["/missing", {}],
+      [
+        "/v1/chat/completions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        },
+      ],
+    ] as const) {
+      const headers = new Headers(init.headers);
+      headers.set("origin", "https://hostile.example");
+      const response = await fetch(`${origin}${path}`, { ...init, headers });
+      assert.equal(response.status, 403);
+      assert.equal(
+        ((await response.json()) as { error: { code: string } }).error.code,
+        "invalid_origin_header",
+      );
+    }
+  });
+});
+
+test("default request logs retain only the pathname", async () => {
+  const entries: Array<Record<string, unknown>> = [];
+  const proxy = createProxyServer(
+    await options({}),
+    createLogger("debug", (entry) => entries.push(entry)),
+  );
+  const address = await proxy.listen();
+  const origin = `http://${address.address}:${address.port}`;
+  try {
+    await fetch(`${origin}/health?token=secret-value`);
+  } finally {
+    await proxy.close();
+  }
+  const request = entries.find((entry) => entry.event === "http_request");
+  assert.equal(request?.level, "debug");
+  assert.equal(request?.path, "/health");
+  assert.equal(JSON.stringify(entries).includes("secret-value"), false);
+});
+
+test("info request logs drop routine probes but keep probe failures", async () => {
+  const entries: Array<Record<string, unknown>> = [];
+  const proxy = createProxyServer(
+    await options({}),
+    createLogger("info", (entry) => entries.push(entry)),
+  );
+  const address = await proxy.listen();
+  const origin = `http://${address.address}:${address.port}`;
+  try {
+    // The expected probe outcomes, including the not-ready 503 a startup poll
+    // sees, are routine; anything else on a probe path is not.
+    await fetch(`${origin}/health`);
+    await fetch(`${origin}/ready`);
+    await fetch(`${origin}/health`, { method: "POST" });
+    await fetch(`${origin}/missing`);
+  } finally {
+    await proxy.close();
+  }
+  const requests = entries.filter((entry) => entry.event === "http_request");
+  assert.deepEqual(
+    requests.map((entry) => [entry.method, entry.path, entry.status]),
+    [
+      ["POST", "/health", 404],
+      ["GET", "/missing", 404],
+    ],
+  );
+  assert.equal(
+    requests.every((entry) => entry.level === "info"),
+    true,
+  );
+});
+
+test("authority-rejected requests still emit an http_request log entry", async () => {
+  const entries: Array<Record<string, unknown>> = [];
+  const proxy = createProxyServer(
+    await options({}),
+    createLogger("info", (entry) => entries.push(entry)),
+  );
+  const address = await proxy.listen();
+  const origin = `http://${address.address}:${address.port}`;
+  try {
+    const headers = new Headers();
+    headers.set("origin", "https://hostile.example");
+    // A probe path proves the rejection survives the debug-level probe rule.
+    const response = await fetch(`${origin}/health`, { headers });
+    assert.equal(response.status, 403);
+  } finally {
+    await proxy.close();
+  }
+  const request = entries.find((entry) => entry.event === "http_request");
+  assert.equal(request?.status, 403);
+  assert.equal(request?.path, "/health");
+});
+
+test("HTTP failures use OpenAI-shaped JSON and never leak warnings", async () => {
+  await withServer({}, async (origin) => {
+    const cases: Array<[Promise<Response>, number, string]> = [
+      [fetch(`${origin}/missing`), 404, "route_not_found"],
+      [
+        fetch(`${origin}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{",
+        }),
+        400,
+        "invalid_json",
+      ],
+      [
+        fetch(`${origin}/v1/chat/completions`, { method: "POST", body: "{}" }),
+        415,
+        "unsupported_media_type",
+      ],
+      [
+        fetch(`${origin}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        }),
+        503,
+        "app_server_not_ready",
+      ],
+      [fetch(`${origin}/v1/models`), 503, "app_server_not_ready"],
+    ];
+    for (const [pending, status, code] of cases) {
+      const response = await pending;
+      assert.equal(response.status, status);
+      const body = (await response.json()) as {
+        error: { code: string; param: unknown };
+      };
+      assert.deepEqual(Object.keys(body), ["error"]);
+      assert.equal(body.error.code, code);
+      assert.equal(body.error.param, null);
+    }
+  });
+});
+
+test("unsupported model management methods and item paths remain absent", async () => {
+  await withServer({}, async (origin) => {
+    for (const [path, method] of [
+      ["/v1/models", "POST"],
+      ["/v1/models/gpt-6-luna", "GET"],
+      ["/v1/models/gpt-6-luna", "DELETE"],
+    ] as const) {
+      const response = await fetch(`${origin}${path}`, { method });
+      assert.equal(response.status, 404);
+      assert.equal(
+        ((await response.json()) as { error: { code: string } }).error.code,
+        "route_not_found",
+      );
+    }
+  });
+});
+
+test("body limit applies to declared and streamed bodies", async () => {
+  await withServer({ bodyLimitBytes: 8 }, async (origin) => {
+    const declared = await fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value: "too long" }),
+    });
+    assert.equal(declared.status, 413);
+    assert.equal(
+      ((await declared.json()) as { error: { code: string } }).error.code,
+      "body_too_large",
+    );
+
+    const url = new URL(origin);
+    const streamed = await new Promise<{
+      status: number | undefined;
+      body: string;
+    }>((resolve, reject) => {
+      const request = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: "/v1/chat/completions",
+          method: "POST",
+          headers: { "content-type": "application/json" },
+        },
+        (response) => {
+          let body = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk: string) => {
+            body += chunk;
+          });
+          response.once("end", () =>
+            resolve({ status: response.statusCode, body }),
+          );
+        },
+      );
+      request.once("error", reject);
+      // Omitting Content-Length makes Node use chunked transfer encoding, so
+      // the server can enforce the limit only while consuming the body.
+      request.write("123456789");
+      request.end();
+    });
+    assert.equal(streamed.status, 413);
+    assert.equal(
+      (JSON.parse(streamed.body) as { error: { code: string } }).error.code,
+      "body_too_large",
+    );
+  });
+});
+
+test("an incomplete request receives the configured timeout error", async () => {
+  await withServer({ requestTimeoutMs: 50 }, async (origin) => {
+    const url = new URL(origin);
+    const request = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: "/v1/chat/completions",
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "2" },
+    });
+    request.flushHeaders();
+    const [response] = await once(request, "response");
+    assert(response instanceof http.IncomingMessage);
+    assert.equal(response.statusCode, 408);
+    let body = "";
+    response.setEncoding("utf8");
+    response.on("data", (chunk: string) => {
+      body += chunk;
+    });
+    await once(response, "end");
+    assert.equal(
+      (JSON.parse(body) as { error: { code: string } }).error.code,
+      "request_timeout",
+    );
+    request.destroy();
+  });
+});
+
+/**
+ * Polls /health until it reports the expected status, because the server
+ * counts a request against capacity only after accepting it and releases
+ * capacity only after observing the disconnect.
+ */
+async function pollHealth(origin: string, expected: number): Promise<Response> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const response = await fetch(`${origin}/health`);
+    if (response.status === expected || Date.now() >= deadline) return response;
+    await response.arrayBuffer();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test("capacity rejects with overloaded and a disconnect releases it", async () => {
+  await withServer({ maxRequests: 1 }, async (origin) => {
+    const url = new URL(origin);
+    const socket = net.connect(Number(url.port), url.hostname);
+    await once(socket, "connect");
+    socket.write(
+      "POST /v1/chat/completions HTTP/1.1\r\n" +
+        `Host: ${url.host}\r\n` +
+        "Content-Type: application/json\r\n" +
+        "Content-Length: 2\r\n\r\n",
+    );
+    const overloaded = await pollHealth(origin, 429);
+    assert.equal(overloaded.status, 429);
+    assert.equal(
+      ((await overloaded.json()) as { error: { code: string } }).error.code,
+      "overloaded",
+    );
+    socket.destroy();
+    await once(socket, "close");
+    const response = await pollHealth(origin, 200);
+    assert.equal(response.status, 200);
+  });
+});
+
+test("zero maxRequests accepts overlapping requests without a local capacity rejection", async () => {
+  await withServer({ maxRequests: 0 }, async (origin) => {
+    const url = new URL(origin);
+    const socket = net.connect(Number(url.port), url.hostname);
+    try {
+      await once(socket, "connect");
+      socket.write(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: " +
+          url.host +
+          "\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n",
+      );
+      for (const response of await Promise.all(
+        Array.from({ length: 5 }, () => fetch(`${origin}/health`)),
+      )) {
+        assert.equal(response.status, 200);
+        await response.arrayBuffer();
+      }
+    } finally {
+      socket.destroy();
+    }
+  });
+});
+
+test("local bridge routes aliases and preserves client tool ownership and stricter policy", async () => {
+  const previous = process.env.CODEX_BRIDGE_TOKEN;
+  process.env.CODEX_BRIDGE_TOKEN = "synthetic-test-key";
+  try {
+    await withServer(
+      { localBridgeModel: "synthetic-default" },
+      async (origin, proxy) => {
+        const starts: Array<Record<string, unknown>> = [];
+        const fake = createFakeTransport({
+          onMessage(message, send) {
+            const id = message.id as number;
+            if (message.method === "model/list") {
+              send(
+                protocolResponse("model/list", id, {
+                  data: [protocolModel("explicit-model")],
+                  nextCursor: null,
+                }),
+              );
+            } else if (message.method === "thread/start") {
+              starts.push(message.params as Record<string, unknown>);
+              send(
+                protocolResponse(
+                  "thread/start",
+                  id,
+                  protocolThreadStartResponse(protocolThread("thr_profile")),
+                ),
+              );
+            } else if (message.method === "turn/start") {
+              send(
+                protocolResponse("turn/start", id, {
+                  turn: protocolTurn("turn_profile", "inProgress"),
+                }),
+              );
+              send(
+                protocolNotification({
+                  method: "item/agentMessage/delta",
+                  params: {
+                    threadId: "thr_profile",
+                    turnId: "turn_profile",
+                    itemId: "answer",
+                    delta: "ok",
+                  },
+                }),
+              );
+              completeTurn(send, "thr_profile", "turn_profile");
+            }
+          },
+        });
+        proxy.setTransport(fake.rpc);
+        proxy.setReady(true);
+        const models = await fetch(`${origin}/v1/models`, {
+          headers: { authorization: "Bearer synthetic-test-key" },
+        });
+        assert.deepEqual(
+          ((await models.json()) as { data: Array<{ id: string }> }).data.map(
+            (m) => m.id,
+          ),
+          ["explicit-model", "codex-cli"],
+        );
+        const post = (extra: Record<string, unknown>) =>
+          fetch(`${origin}/v1/chat/completions`, {
+            method: "POST",
+            headers: {
+              authorization: "Bearer synthetic-test-key",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "codex-cli",
+              messages: [{ role: "user", content: "synthetic" }],
+              ...extra,
+            }),
+          });
+        for (const extra of [
+          {},
+          {
+            tools: [
+              {
+                type: "function",
+                function: {
+                  name: "Bash",
+                  parameters: { type: "object", properties: {} },
+                },
+              },
+            ],
+          },
+          { model: "explicit-model", x_codex: { sandbox: "read-only" } },
+        ]) {
+          const response = await post(extra);
+          assert.equal(response.status, 200, await response.text());
+        }
+        assert.equal(starts[0]?.model, "synthetic-default");
+        assert.equal(starts[0]?.sandbox, "danger-full-access");
+        assert.equal(starts[0]?.approvalPolicy, "never");
+        assert.deepEqual(starts[1]?.environments, []);
+        assert.equal(starts[1]?.sandbox, "read-only");
+        assert.equal(starts[2]?.sandbox, "read-only");
+        assert.equal(starts[2]?.model, "explicit-model");
+        const malformed = await post({ x_codex: "bad" });
+        assert.equal(malformed.status, 400);
+        await malformed.arrayBuffer();
+        proxy.setTransport(fake.rpc, {
+          ...UNRESTRICTED_POLICY_REQUIREMENTS,
+          allowedSandboxModes: ["read-only"],
+        });
+        const denied = await post({});
+        assert.equal(denied.status, 400);
+        await denied.arrayBuffer();
+        assert.equal(starts.length, 3);
+      },
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_BRIDGE_TOKEN;
+    else process.env.CODEX_BRIDGE_TOKEN = previous;
+  }
+});
+
+test("a timed-out backpressured stream releases its concurrency slot", async () => {
+  await withServer(
+    { maxRequests: 1, requestTimeoutMs: 500 },
+    async (origin, proxy) => {
+      const fake = createFakeTransport({
+        onMessage(message, send) {
+          const id = message.id as number;
+          if (message.method === "thread/start")
+            send(
+              protocolResponse(
+                "thread/start",
+                id,
+                protocolThreadStartResponse(protocolThread("thr_stalled")),
+              ),
+            );
+          else if (message.method === "turn/start") {
+            send(
+              protocolResponse("turn/start", id, {
+                turn: protocolTurn("turn_stalled", "inProgress"),
+              }),
+            );
+            // Iterator priming waits for visible output before the response's
+            // initial role chunk can encounter the simulated backpressure.
+            send(
+              protocolNotification({
+                method: "item/agentMessage/delta",
+                params: {
+                  threadId: "thr_stalled",
+                  turnId: "turn_stalled",
+                  itemId: "message",
+                  delta: "primed",
+                },
+              }),
+            );
+          } else if (message.method === "turn/interrupt")
+            send(protocolResponse("turn/interrupt", id, {}));
+        },
+      });
+      proxy.setTransport(fake.rpc, UNRESTRICTED_POLICY_REQUIREMENTS);
+      proxy.setReady(true);
+
+      let reportBlockedWrite = (): void => undefined;
+      const blockedWrite = new Promise<void>((resolve) => {
+        reportBlockedWrite = resolve;
+      });
+      proxy.server.prependOnceListener("request", (_request, response) => {
+        const write = response.write.bind(response);
+        response.write = ((chunk: string | Uint8Array) => {
+          write(chunk);
+          reportBlockedWrite();
+          // No drain event follows, deterministically modeling a client whose
+          // receive window remains full for the lifetime of the request.
+          return false;
+        }) as typeof response.write;
+      });
+
+      const url = new URL(`${origin}/v1/chat/completions`);
+      const body = JSON.stringify({
+        model: "m",
+        stream: true,
+        messages: [{ role: "user", content: "stall" }],
+      });
+      const clientClosed = new Promise<void>((resolve) => {
+        const request = http.request(
+          {
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname,
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "content-length": Buffer.byteLength(body),
+            },
+          },
+          (response) => {
+            response.resume();
+            response.once("close", resolve);
+            response.once("error", resolve);
+          },
+        );
+        request.once("error", resolve);
+        request.end(body);
+      });
+
+      await blockedWrite;
+      assert.equal((await pollHealth(origin, 429)).status, 429);
+      await clientClosed;
+      assert.equal((await pollHealth(origin, 200)).status, 200);
+    },
+  );
+});
