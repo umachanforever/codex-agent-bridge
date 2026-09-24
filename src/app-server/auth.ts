@@ -1,0 +1,243 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { RpcError, type JsonRpcTransport } from "./json-rpc.js";
+import type { Logger } from "../core/logger.js";
+import { listenForAbort, withDeadline } from "../core/abort.js";
+
+/** Minimal account/read fields used by the authentication flow. */
+type AccountResponse = { account?: unknown; requiresOpenaiAuth?: boolean };
+/** Supported account/login/start response variants. */
+type LoginResponse =
+  | { type: "chatgpt"; loginId: string; authUrl: string }
+  | {
+      type: "chatgptDeviceCode";
+      loginId: string;
+      verificationUrl: string;
+      userCode: string;
+    };
+/** Minimal account/login/completed notification payload. */
+type LoginCompleted = {
+  loginId?: string | null;
+  success?: boolean;
+  error?: string | null;
+};
+
+/** Dependencies and policy inputs for authentication. */
+export interface AuthenticationOptions {
+  /** False reuses existing credentials without starting login or logout. */
+  allowLogin?: boolean;
+  rpc: JsonRpcTransport;
+  log: Logger;
+  timeoutMs: number;
+  interactive: boolean;
+  terminal: (message: string) => void;
+  launch?: (url: string) => Promise<boolean>;
+  signal?: AbortSignal;
+}
+
+/** Ensures app-server has an authenticated OpenAI account. */
+export async function ensureAuthenticated(
+  options: AuthenticationOptions,
+): Promise<{ recoveredLogin: boolean }> {
+  let account: AccountResponse;
+  try {
+    account = await readAccount(options);
+  } catch (error) {
+    if (!(error instanceof RpcError)) throw error;
+    if (options.allowLogin === false)
+      throw new Error(
+        "Local Codex authentication is unusable. Sign in with Codex locally, then restart the bridge.",
+      );
+    // An RPC error proves the server is alive but its stored credentials are not.
+    options.log("warn", "codex_auth_unusable", { rpc_code: error.rpcCode });
+    options.log("debug", "codex_auth_unusable_detail", {
+      error: error.message,
+    });
+    await bestEffortLogout(options);
+    await startAndWaitForLogin(options, !options.interactive);
+    if (!isAuthenticated(await readAccount(options)))
+      throw new Error(
+        "Login completed but account/read still reports no account.",
+      );
+    return { recoveredLogin: true };
+  }
+  if (isAuthenticated(account)) return { recoveredLogin: false };
+  if (options.allowLogin === false)
+    throw new Error(
+      "Local Codex authentication is missing. Sign in with Codex locally or explicitly choose --auth-mode independent.",
+    );
+  await startAndWaitForLogin(options, !options.interactive);
+  return { recoveredLogin: false };
+}
+
+/** Reads and validates the app-server authentication state without refreshing it. */
+async function readAccount(
+  options: AuthenticationOptions,
+): Promise<AccountResponse> {
+  // Never force a token rotation: shared refresh tokens are single-use.
+  const account = (await withDeadline(
+    options.signal,
+    {
+      milliseconds: options.timeoutMs,
+      timeoutReason: new Error("account/read timed out."),
+    },
+    async (deadlineSignal) =>
+      await options.rpc.request(
+        "account/read",
+        { refreshToken: false },
+        deadlineSignal,
+      ),
+  )) as AccountResponse;
+  if (typeof account.requiresOpenaiAuth !== "boolean")
+    throw new Error(
+      "account/read returned an invalid requiresOpenaiAuth value.",
+    );
+  return account;
+}
+
+/** Returns whether an account/read response permits using the app-server. */
+function isAuthenticated(account: AccountResponse): boolean {
+  return !account.requiresOpenaiAuth || account.account != null;
+}
+
+/** Clears unusable stored credentials without blocking a fresh login attempt. */
+async function bestEffortLogout(options: AuthenticationOptions): Promise<void> {
+  try {
+    await withDeadline(
+      options.signal,
+      {
+        milliseconds: options.timeoutMs,
+        timeoutReason: new Error("account/logout timed out."),
+      },
+      async (deadlineSignal) =>
+        await options.rpc.request("account/logout", undefined, deadlineSignal),
+    );
+  } catch (error) {
+    // Caller cancellation is authoritative and must never be mistaken for recovery.
+    if (options.signal?.aborted) throw error;
+    if (error instanceof RpcError)
+      options.log("warn", "codex_auth_logout_failed", {
+        rpc_code: error.rpcCode,
+      });
+    else options.log("warn", "codex_auth_logout_failed");
+  }
+}
+
+/** Starts a browser or device-code login and waits for its notification. */
+async function startAndWaitForLogin(
+  options: AuthenticationOptions,
+  useDeviceCode: boolean,
+): Promise<void> {
+  let loginId: string | undefined;
+  let earlyCompletion: LoginCompleted | undefined;
+  let settle!: (error?: Error) => void;
+  const completion = new Promise<void>((resolve, reject) => {
+    settle = (error) => (error ? reject(error) : resolve());
+  });
+  void completion.catch(() => undefined);
+  const notification = (method: string, raw: unknown): void => {
+    if (
+      method !== "account/login/completed" ||
+      typeof raw !== "object" ||
+      raw === null
+    )
+      return;
+    const result = raw as LoginCompleted;
+    if (loginId === undefined) {
+      earlyCompletion = result;
+      return;
+    }
+    if (result.loginId != null && result.loginId !== loginId) return;
+    settle(
+      result.success
+        ? undefined
+        : new Error(result.error ?? "ChatGPT login failed."),
+    );
+  };
+  options.rpc.on("notification", notification);
+
+  try {
+    await withDeadline(
+      options.signal,
+      {
+        milliseconds: options.timeoutMs,
+        timeoutReason: new Error("ChatGPT login timed out."),
+        abortReason: (signal) =>
+          signal.reason instanceof Error
+            ? signal.reason
+            : new Error("ChatGPT login cancelled."),
+      },
+      async (deadlineSignal) => {
+        const disposeDeadline = listenForAbort(
+          deadlineSignal,
+          (abortedSignal) =>
+            settle(
+              abortedSignal.reason instanceof Error
+                ? abortedSignal.reason
+                : new Error("ChatGPT login cancelled."),
+            ),
+        );
+        // A transport that dies mid-login must settle the wait immediately
+        // rather than reporting a misleading timeout after the full deadline.
+        const onTransportClose = (reason: Error): void => settle(reason);
+        options.rpc.once("close", onTransportClose);
+        try {
+          const login = (await options.rpc.request(
+            "account/login/start",
+            { type: useDeviceCode ? "chatgptDeviceCode" : "chatgpt" },
+            deadlineSignal,
+          )) as LoginResponse;
+          loginId = login.loginId;
+          if (earlyCompletion !== undefined)
+            notification("account/login/completed", earlyCompletion);
+
+          if (login.type === "chatgpt") {
+            const launched = await (options.launch ?? launchBrowser)(
+              login.authUrl,
+            );
+            if (!launched) {
+              options.terminal(
+                `Open this URL to sign in to ChatGPT:\n${login.authUrl}\n`,
+              );
+              options.log("warn", "browser_launch_failed", {
+                login_url: login.authUrl,
+              });
+            } else options.log("info", "browser_launch_succeeded");
+          } else {
+            options.terminal(
+              `Open ${login.verificationUrl} and enter code ${login.userCode}.\n`,
+            );
+            options.log("info", "device_code_login_started", {
+              verification_url: login.verificationUrl,
+              user_code: login.userCode,
+            });
+          }
+          await completion;
+        } finally {
+          options.rpc.off("close", onTransportClose);
+          disposeDeadline();
+        }
+      },
+    );
+  } finally {
+    options.rpc.off("notification", notification);
+  }
+}
+
+/** Opens a login URL with the platform browser without invoking a shell. */
+async function launchBrowser(url: string): Promise<boolean> {
+  const command =
+    process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "cmd"
+        : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  try {
+    const child = spawn(command, args, { shell: false, stdio: "ignore" });
+    const [code] = await once(child, "exit");
+    return code === 0;
+  } catch {
+    return false;
+  }
+}
