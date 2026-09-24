@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { inflateRawSync } from "node:zlib";
 import { dirname, join, sep } from "node:path";
 import { parse as parseCsv } from "csv-parse/sync";
 import readXlsxFile from "read-excel-file/node";
@@ -46,7 +47,7 @@ function invalidFile(message: string, param: string): never {
   );
 }
 
-/** Checks ZIP central-directory sizes before a reader expands an XLSX archive. */
+/** Checks every local ZIP entry and its actual expansion before XLSX parsing. */
 function checkXlsxArchive(bytes: Buffer, param: string): void {
   let end = -1;
   for (
@@ -73,26 +74,113 @@ function checkXlsxArchive(bytes: Buffer, param: string): void {
     invalidFile("XLSX archive exceeds the supported ZIP limits.", param);
   let offset = start;
   let expanded = 0;
+  const entries: {
+    local: number;
+    flags: number;
+    method: number;
+    crc: number;
+    compressed: number;
+    uncompressed: number;
+    name: Buffer;
+  }[] = [];
   for (let index = 0; index < count; index += 1) {
     if (offset + 46 > end || bytes.readUInt32LE(offset) !== 0x02014b50)
       invalidFile("XLSX ZIP directory is malformed.", param);
+    const flags = bytes.readUInt16LE(offset + 8);
+    const method = bytes.readUInt16LE(offset + 10);
+    const compressed = bytes.readUInt32LE(offset + 20);
     const uncompressed = bytes.readUInt32LE(offset + 24);
+    const nameLength = bytes.readUInt16LE(offset + 28);
+    const extraLength = bytes.readUInt16LE(offset + 30);
+    const commentLength = bytes.readUInt16LE(offset + 32);
+    const next = offset + 46 + nameLength + extraLength + commentLength;
     if (
+      next > start + size ||
+      compressed === 0xffffffff ||
       uncompressed === 0xffffffff ||
-      (bytes.readUInt16LE(offset + 8) & 1) !== 0
+      (flags & ~0x0808) !== 0 ||
+      (method !== 0 && method !== 8)
     )
-      invalidFile("Encrypted or ZIP64 XLSX archives are unsupported.", param);
-    expanded += uncompressed;
-    if (expanded > MAX_XLSX_EXPANDED_BYTES)
-      invalidFile("XLSX expanded data exceeds 32 MiB.", param);
-    offset +=
-      46 +
-      bytes.readUInt16LE(offset + 28) +
-      bytes.readUInt16LE(offset + 30) +
-      bytes.readUInt16LE(offset + 32);
+      invalidFile("Unsupported XLSX ZIP entry.", param);
+    entries.push({
+      local: bytes.readUInt32LE(offset + 42),
+      flags,
+      method,
+      crc: bytes.readUInt32LE(offset + 16),
+      compressed,
+      uncompressed,
+      name: bytes.subarray(offset + 46, offset + 46 + nameLength),
+    });
+    offset = next;
   }
   if (offset !== start + size)
     invalidFile("XLSX ZIP directory is malformed.", param);
+  // The spreadsheet reader traverses local headers, so require that directory
+  // entries describe precisely the same byte sequence, with no hidden entries.
+  entries.sort((a, b) => a.local - b.local);
+  let cursor = 0;
+  for (const entry of entries) {
+    if (
+      entry.local !== cursor ||
+      cursor + 30 > start ||
+      bytes.readUInt32LE(cursor) !== 0x04034b50
+    )
+      invalidFile("XLSX ZIP local entries are malformed.", param);
+    const flags = bytes.readUInt16LE(cursor + 6);
+    const method = bytes.readUInt16LE(cursor + 8);
+    const nameLength = bytes.readUInt16LE(cursor + 26);
+    const extraLength = bytes.readUInt16LE(cursor + 28);
+    const dataStart = cursor + 30 + nameLength + extraLength;
+    const dataEnd = dataStart + entry.compressed;
+    if (
+      flags !== entry.flags ||
+      method !== entry.method ||
+      nameLength !== entry.name.length ||
+      dataEnd > start ||
+      !bytes
+        .subarray(cursor + 30, cursor + 30 + nameLength)
+        .equals(entry.name) ||
+      ((flags & 8) === 0 &&
+        (bytes.readUInt32LE(cursor + 14) !== entry.crc ||
+          bytes.readUInt32LE(cursor + 18) !== entry.compressed ||
+          bytes.readUInt32LE(cursor + 22) !== entry.uncompressed))
+    )
+      invalidFile("XLSX ZIP local entry differs from its directory.", param);
+    let actual: number;
+    try {
+      actual =
+        method === 0
+          ? entry.compressed
+          : inflateRawSync(bytes.subarray(dataStart, dataEnd), {
+              maxOutputLength: MAX_XLSX_EXPANDED_BYTES - expanded + 1,
+            }).length;
+    } catch {
+      invalidFile("XLSX expanded data exceeds 32 MiB or is invalid.", param);
+    }
+    expanded += actual;
+    if (expanded > MAX_XLSX_EXPANDED_BYTES || actual !== entry.uncompressed)
+      invalidFile(
+        "XLSX expanded data exceeds 32 MiB or differs from its directory.",
+        param,
+      );
+    cursor = dataEnd;
+    if ((flags & 8) !== 0) {
+      if (cursor + 4 <= start && bytes.readUInt32LE(cursor) === 0x08074b50)
+        cursor += 4;
+      if (
+        cursor + 12 > start ||
+        bytes.readUInt32LE(cursor) !== entry.crc ||
+        bytes.readUInt32LE(cursor + 4) !== entry.compressed ||
+        bytes.readUInt32LE(cursor + 8) !== entry.uncompressed
+      )
+        invalidFile(
+          "XLSX ZIP data descriptor differs from its directory.",
+          param,
+        );
+      cursor += 12;
+    }
+  }
+  if (cursor !== start) invalidFile("XLSX ZIP has unlisted local data.", param);
 }
 
 /** Converts an inline text or spreadsheet file into bounded model-visible text. */

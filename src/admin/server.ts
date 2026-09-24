@@ -58,7 +58,7 @@ export interface AdminOptions {
   models?: () => Promise<string[]>;
   discoverPrices?: (signal: AbortSignal) => ReturnType<typeof discoverPrices>;
 }
-/** Opaque HttpOnly sessions expire without persistent browser credentials. */
+/** Opaque sessions expire without retaining the administrator password. */
 interface Session {
   expires: number;
   csrf: string;
@@ -234,17 +234,15 @@ export function createAdminServer(options: AdminOptions) {
       if (remember)
         options.store.saveSession(id, csrf, expires, credentialVersion);
       else sessions.set(id, { csrf, expires });
-      response.setHeader(
-        "set-cookie",
-        `bridge_admin=${id}; HttpOnly; SameSite=Strict; Path=/admin${remember ? `; Max-Age=${maxAge}` : ""}`,
-      );
-      json(response, 200, { csrf });
+      // Browser storage is origin-scoped, unlike cookies shared across localhost ports.
+      json(response, 200, { session: id, csrf });
       return;
     }
+    const supplied = request.headers["x-admin-session"];
     const id =
-      /(?:^|;\s*)bridge_admin=([A-Za-z0-9_-]+)/.exec(
-        request.headers.cookie ?? "",
-      )?.[1] ?? "";
+      typeof supplied === "string" && /^[A-Za-z0-9_-]{43}$/.test(supplied)
+        ? supplied
+        : "";
     const session =
       sessions.get(id) ?? options.store.session(id, credentialVersion);
     if (!session || session.expires < Date.now()) {
@@ -317,10 +315,6 @@ export function createAdminServer(options: AdminOptions) {
     if (path === "logout" && request.method === "POST") {
       sessions.delete(id);
       options.store.deleteSession(id);
-      response.setHeader(
-        "set-cookie",
-        "bridge_admin=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0",
-      );
       json(response, 200, { ok: true });
       return;
     }

@@ -577,6 +577,36 @@ test("inline files reject undecodable binary and invalid spreadsheets before dis
   }
 });
 
+/** Rejects a ZIP whose directory and local header understate actual expansion. */
+test("inline XLSX caps actual decompression despite forged ZIP sizes", async () => {
+  const bytes = Buffer.from(
+    zipSync({ "xl/worksheets/sheet1.xml": Buffer.alloc(33 * 1024 * 1024, 65) }),
+  );
+  const central = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  assert.ok(central > 0);
+  bytes.writeUInt32LE(1, 22);
+  bytes.writeUInt32LE(1, central + 24);
+  const messages = parse([
+    {
+      role: "user",
+      content: [
+        {
+          type: "file",
+          file: {
+            filename: "sample.xlsx",
+            file_data: `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${bytes.toString("base64")}`,
+          },
+        },
+      ],
+    },
+  ]).messages;
+  await assert.rejects(
+    materializePdfParts(messages, AbortSignal.timeout(5000)),
+    (error: unknown) =>
+      error instanceof HttpError && error.code === "invalid_file",
+  );
+});
+
 test("inline text is preserved and malformed CSV is rejected", async () => {
   const textData = Buffer.from("hello, model", "utf8").toString("base64");
   const textMessages = parse([

@@ -53,7 +53,7 @@ async function login() {
     busy.value = false;
   }
 }
-/** Explicit local opt-in still obtains an HttpOnly session and CSRF token. */
+/** Explicit local opt-in still obtains a session and CSRF token. */
 async function enterLocal() {
   busy.value = true;
   error.value = "";

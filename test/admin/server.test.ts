@@ -61,7 +61,7 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
     });
     const port = await server.listen();
     const origin = `http://127.0.0.1:${port}`;
-    let cookie = "",
+    let session = "",
       csrf = "";
     const post = (
       path: string,
@@ -73,7 +73,7 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
         headers: {
           origin,
           "content-type": "application/json",
-          cookie,
+          "x-admin-session": session,
           "x-csrf-token": csrf,
           ...extra,
         },
@@ -112,12 +112,19 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
         token: "synthetic-admin-only-token",
       });
       assert.equal(login.status, 200);
-      assert.match(
-        login.headers.get("set-cookie")!,
-        /HttpOnly; SameSite=Strict/,
+      assert.equal(login.headers.get("set-cookie"), null);
+      ({ session, csrf } = (await login.json()) as {
+        session: string;
+        csrf: string;
+      });
+      assert.equal(
+        (
+          await fetch(`${origin}/admin/api/keys`, {
+            headers: { cookie: `bridge_admin=${session}` },
+          })
+        ).status,
+        401,
       );
-      cookie = login.headers.get("set-cookie")!.split(";")[0]!;
-      csrf = ((await login.json()) as { csrf: string }).csrf;
       const prices = store.prices();
       assert.equal(
         (
@@ -166,7 +173,9 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
       );
       assert.deepEqual(
         await (
-          await fetch(`${origin}/admin/api/models`, { headers: { cookie } })
+          await fetch(`${origin}/admin/api/models`, {
+            headers: { "x-admin-session": session },
+          })
         ).json(),
         { models: ["synthetic-a", "synthetic-b"] },
       );
@@ -189,21 +198,24 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
       assert.deepEqual(
         await (
           await fetch(`${origin}/admin/api/usage/models`, {
-            headers: { cookie },
+            headers: { "x-admin-session": session },
           })
         ).json(),
         { models: ["synthetic-a", "synthetic-b", "synthetic-old"] },
       );
       modelsAvailable = false;
       assert.equal(
-        (await fetch(`${origin}/admin/api/models`, { headers: { cookie } }))
-          .status,
+        (
+          await fetch(`${origin}/admin/api/models`, {
+            headers: { "x-admin-session": session },
+          })
+        ).status,
         503,
       );
       assert.deepEqual(
         await (
           await fetch(`${origin}/admin/api/usage/models`, {
-            headers: { cookie },
+            headers: { "x-admin-session": session },
           })
         ).json(),
         { models: ["synthetic-a", "synthetic-old"] },
@@ -229,7 +241,7 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
       ).json()) as { secret: string };
       assert.equal(revealed.secret, key.secret);
       const listing = await fetch(`${origin}/admin/api/keys`, {
-        headers: { cookie },
+        headers: { "x-admin-session": session },
       });
       assert.equal((await listing.text()).includes(key.secret), false);
       assert.equal(
@@ -255,7 +267,7 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
       assert.equal(
         (
           await fetch(`${origin}/admin/api/usage?offset=-1`, {
-            headers: { cookie },
+            headers: { "x-admin-session": session },
           })
         ).status,
         400,
@@ -263,15 +275,21 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
       assert.equal(
         (
           await fetch(`${origin}/admin/api/overview`, {
-            headers: { cookie, origin: "https://evil.invalid" },
+            headers: {
+              "x-admin-session": session,
+              origin: "https://evil.invalid",
+            },
           })
         ).status,
         403,
       );
       assert.equal((await post("logout", {})).status, 200);
       assert.equal(
-        (await fetch(`${origin}/admin/api/keys`, { headers: { cookie } }))
-          .status,
+        (
+          await fetch(`${origin}/admin/api/keys`, {
+            headers: { "x-admin-session": session },
+          })
+        ).status,
         401,
       );
     } finally {

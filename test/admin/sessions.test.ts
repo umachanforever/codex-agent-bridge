@@ -44,31 +44,29 @@ test("remembered sessions survive restart, revoke on logout and bind to credenti
         body: JSON.stringify({ token: "synthetic-admin", remember }),
       });
       assert.equal(response.status, 200);
-      return {
-        cookie: response.headers.get("set-cookie")!.split(";")[0]!,
-        header: response.headers.get("set-cookie")!,
-        csrf: ((await response.json()) as { csrf: string }).csrf,
-      };
+      assert.equal(response.headers.get("set-cookie"), null);
+      return (await response.json()) as { session: string; csrf: string };
     };
     try {
       const remembered = await login(true),
         temporary = await login(false);
-      assert.match(remembered.header, /Max-Age=2592000/);
-      assert.doesNotMatch(temporary.header, /Max-Age/);
+      assert.match(remembered.session, /^[A-Za-z0-9_-]{43}$/);
       await server.close();
       store.close();
       store = new AdminStore(root);
       server = start();
       origin = `http://127.0.0.1:${await server.listen()}`;
-      const get = (cookie: string) =>
-        fetch(origin + "/admin/api/session", { headers: { cookie } });
-      assert.equal((await get(remembered.cookie)).status, 200);
-      assert.equal((await get(temporary.cookie)).status, 401);
+      const get = (session: string) =>
+        fetch(origin + "/admin/api/session", {
+          headers: { "x-admin-session": session },
+        });
+      assert.equal((await get(remembered.session)).status, 200);
+      assert.equal((await get(temporary.session)).status, 401);
       assert.equal(
         (
           await fetch(origin + "/admin/api/logout", {
             method: "POST",
-            headers: { origin, cookie: remembered.cookie },
+            headers: { origin, "x-admin-session": remembered.session },
           })
         ).status,
         403,
@@ -79,20 +77,20 @@ test("remembered sessions survive restart, revoke on logout and bind to credenti
             method: "POST",
             headers: {
               origin,
-              cookie: remembered.cookie,
+              "x-admin-session": remembered.session,
               "x-csrf-token": remembered.csrf,
             },
           })
         ).status,
         200,
       );
-      assert.equal((await get(remembered.cookie)).status, 401);
+      assert.equal((await get(remembered.session)).status, 401);
       const rotated = await login(true);
       await server.close();
       verifier.version = "v2";
       server = start();
       origin = `http://127.0.0.1:${await server.listen()}`;
-      assert.equal((await get(rotated.cookie)).status, 401);
+      assert.equal((await get(rotated.session)).status, 401);
       store.saveSession("expired", "csrf", Date.now() - 1, "v2");
       assert.equal(store.session("expired", "v2"), undefined);
     } finally {
@@ -155,8 +153,10 @@ test("local login is explicit and rejects forwarded and cross-site requests", as
       );
       const response = await post();
       assert.equal(response.status, 200);
-      const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
-      const { csrf } = (await response.json()) as { csrf: string };
+      const { session, csrf } = (await response.json()) as {
+        session: string;
+        csrf: string;
+      };
       const key = store.createKey("synthetic");
       assert.equal(
         (
@@ -164,7 +164,7 @@ test("local login is explicit and rejects forwarded and cross-site requests", as
             method: "POST",
             headers: {
               origin,
-              cookie,
+              "x-admin-session": session,
               "content-type": "application/json",
               "x-csrf-token": csrf,
             },

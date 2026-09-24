@@ -165,7 +165,7 @@ export class AdminStore {
       .get(digest(id), credential, Date.now()) as
       { csrf: string; expires: number } | undefined;
   }
-  /** Logout revokes the server-side session, not merely the browser cookie. */
+  /** Logout revokes the server-side session, not merely browser storage. */
   deleteSession(id: string): void {
     this.#db
       .prepare("DELETE FROM admin_sessions WHERE digest=?")

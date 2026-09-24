@@ -32,10 +32,13 @@ form offers “remember login for 30 days” on your own device. Remembered opaq
 sessions survive service restarts; the database stores only a digest of each
 session bearer, its CSRF token, expiry and admin-credential fingerprint. Changing
 the admin token and restarting invalidates them. Logout immediately revokes the
-current session. Without this option, the browser receives a session cookie and
-the server enforces a 12-hour expiry; restart requires login again. Neither mode
-stores the administrator password in browser storage. Reveal and rotation still
-require the administrator password, even in local mode.
+current session. Without this option, the browser keeps the session bearer in
+`sessionStorage` and the server enforces a 12-hour expiry; restart requires
+login again. Remembered sessions use `localStorage` for that browser origin.
+Neither mode stores the administrator password in browser storage. Reveal and
+rotation still require the administrator password, even in local mode.
+Browser sessions created by earlier cookie-based versions require a new login
+after this change; stored server-side sessions are not automatically imported.
 
 ### Optional native local login
 
@@ -72,8 +75,12 @@ managed in the key table, and its requests are grouped as `legacy`. Rotate that 
 through its original secret source. New per-agent keys are recommended for attribution.
 Do not configure the same secret for admin login and API clients.
 
-Sessions use HttpOnly, SameSite=Strict cookies, an explicit CSRF token and exact
-same-origin checks on writes. The model API still rejects browser Origin headers.
+The console sends its session bearer in `X-Admin-Session`, scoped by browser
+storage to the exact origin, including the port. This avoids sharing a login
+between separate localhost services, but the bearer is readable by scripts on
+that origin; use the console only on a trusted local browser profile. Sessions
+retain an explicit CSRF token and exact same-origin checks on writes. The model
+API still rejects browser Origin headers.
 All management responses use no-store; external scripts and framing are blocked.
 Management login/reveal attempts are limited. This is an HTTP loopback console, not
 an Internet-facing TLS or multi-user system. All authorized clients are trusted:
