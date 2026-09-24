@@ -1,0 +1,18 @@
+dist
+deploy/local
+secrets
+node_modules
+web/node_modules
+web-dist
+web/package-lock.json
+AGENTS.md
+# Preserve the user's editable copy of the upstream base instructions verbatim.
+model-instructions.md
+docs
+protocol/CONTRACT.md
+protocol/generated
+protocol/fixtures
+protocol/schemas
+package-lock.json
+scripts
+test/contract.test.mjs

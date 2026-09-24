@@ -1,0 +1,46 @@
+# Repository conventions
+
+## Purpose
+
+This repository builds `codex-agent-bridge`, a localhost-only TypeScript service that translates OpenAI Chat Completions requests to `codex app-server`, with a web console and Docker deployment. Keep the `codex-openai-proxy` CLI alias and existing default state paths compatible.
+
+## Writing conventions
+
+- Write concise, implementation-oriented Markdown.
+- Use sentence case for headings.
+- Define a term once and use it consistently. Prefer `app-server`, `Chat Completions`, `Codex thread`, and `proxy`.
+- Clearly label nonstandard fields and events as `x_codex` extensions. Never imply that `previous_response_id`, reasoning deltas, or internal tool-result deltas are standard Chat Completions features.
+- Use `gpt-6-luna` in every live-test command, fixture intended for live use, and development example that could incur model cost.
+    - Other model names may appear only when documenting generic client input or protocol history.
+- Keep examples safe by default: loopback hosts, `read-only` or `workspace-write`, temporary directories, and no secrets.
+- Do not paste access tokens, OAuth callbacks, user home paths, or captured production transcripts into docs or fixtures.
+- Update the relevant topic in `docs/` when a design decision changes. Record its compatibility consequence there and update the README when user-visible behavior changes.
+
+## Implementation conventions
+
+- Target Node.js 22+ (Node 24 recommended for deployment) and strict TypeScript.
+- Add a concise documentation comment to every top-level definition in maintained source and test code. Generated artifacts are exempt.
+- Add inline comments at important implementation points where security constraints, protocol behavior, lifecycle ordering, or other non-obvious reasoning would otherwise be unclear.
+- Keep deployment CLI-driven. The optional loopback web management console must use separate administrator authentication, same-origin and CSRF checks; client API keys never grant management access. Internal modules must remain independently testable.
+- Bind only to validated loopback addresses. Treat any possible non-loopback bind as a release-blocking security defect.
+- Explicit native-only `--admin-auth local` is an exception to initial administrator login only; retain sessions, same-origin/CSRF gates and sensitive key reauthentication. Password authentication remains the default and is required in supported container deployments. Never infer bypass from Host or peer address alone.
+- Spawn app-server without a shell and use structured argument arrays.
+- Keep JSON-RPC transport, HTTP translation, event aggregation, thread mapping, and policy validation in separate modules.
+- Preserve unknown app-server events in diagnostics, but expose only documented and tested HTTP output.
+- Ignore harmless unsupported Chat Completions fields with one structured warning per request. Reject malformed, ambiguous, or unsafe values with OpenAI-shaped errors.
+- Never weaken Codex or managed policy. A request may choose among allowed policies but cannot override a stricter effective constraint.
+- Omit unavailable token counts; never estimate usage.
+
+## Testing conventions
+
+- Default tests must be deterministic and offline, using recorded synthetic fixtures or a fake app-server.
+- Build maintained fake app-server messages from the generated protocol structures. Type-check notifications against the generated `ServerNotification` union and use shared typed fixture builders for complete nested values such as `Turn`.
+- Tests must cover partial JSON-RPC frames, interleaved notifications, SSE backpressure, disconnects, duplicate tool results, process exit, and malformed inputs.
+- Live tests must be opt-in through explicit selection of the dedicated live configuration, run serially, cap output, and use only `gpt-6-luna`.
+- Never run a live test as part of the default `test` script or pull-request CI.
+- Treat logs at every level as sensitive plaintext: they may contain login URLs, tokens, filesystem paths, prompts, and tool arguments.
+    - Do not check runtime log captures into snapshots, fixtures, diagnostics, or other persisted repository artifacts; use synthetic placeholders instead.
+
+## Completion standard
+
+A change is complete only when its acceptance criteria pass, its decisions are reflected in the README and relevant topic documentation, and mocked tests cover both success and failure paths. Any live verification must state its expected maximum number of model calls.
