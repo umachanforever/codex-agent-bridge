@@ -1,0 +1,8 @@
+# Mount a directory so host-side atomic credential replacement remains visible.
+services:
+  bridge:
+    environment:
+      BRIDGE_AUTH_MODE: reuse
+      BRIDGE_AUTH_SOURCE: /run/local-codex
+    volumes:
+      - ${LOCAL_CODEX_HOME:?Set LOCAL_CODEX_HOME to your local Codex directory}:/run/local-codex:ro

@@ -1,0 +1,50 @@
+services:
+  bridge:
+    build: .
+    init: true
+    restart: unless-stopped
+    environment:
+      CODEX_BRIDGE_TOKEN_FILE: /run/secrets/bridge_token
+      BRIDGE_MODEL: ${BRIDGE_MODEL:-gpt-6-luna}
+      BRIDGE_AUTH_MODE: ${BRIDGE_AUTH_MODE:-reuse}
+      BRIDGE_REQUEST_TIMEOUT: ${BRIDGE_REQUEST_TIMEOUT:-21600s}
+      BRIDGE_BODY_LIMIT: ${BRIDGE_BODY_LIMIT:-134217728}
+      BRIDGE_MAX_REQUESTS: ${BRIDGE_MAX_REQUESTS:-10000}
+    secrets:
+      - bridge_token
+    volumes:
+      - codex_home:/data/codex
+      - bridge_state:/data/state
+      - workspace:/workspace
+    ports:
+      - "127.0.0.1:${BRIDGE_PORT:-8787}:8080"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 40s
+  gateway:
+    image: nginx:1.28-alpine
+    user: "101:101"
+    network_mode: service:bridge
+    depends_on:
+      bridge:
+        condition: service_started
+    restart: unless-stopped
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+secrets:
+  bridge_token:
+    file: ${BRIDGE_TOKEN_FILE:-./secrets/bridge-token}
+volumes:
+  codex_home:
+  bridge_state:
+  workspace:
