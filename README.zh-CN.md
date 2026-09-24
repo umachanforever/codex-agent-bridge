@@ -5,7 +5,6 @@
 Codex Agent Bridge 通过兼容 OpenAI Chat Completions 的接口，将本地的 `codex app-server` 暴露给 AstrBot、WorkBuddy 等智能体客户端。内置 Web 管理控制台、独立的客户端 API Key、用量记录和 Docker 部署能力。
 
 可使用 Node.js 或 Docker Compose 从本仓库安装。下文的部署命令会基于当前检出的源码构建服务。
-当前源码版本为 `0.3.0`；尚未发布 npm 包或公共 Docker 镜像。
 
 ## 目录
 

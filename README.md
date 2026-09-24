@@ -5,7 +5,6 @@ English | [简体中文](README.zh-CN.md)
 Codex Agent Bridge exposes a local `codex app-server` through an OpenAI Chat Completions compatible API for agent clients such as AstrBot and WorkBuddy. It includes a web management console, separate client API keys, usage records, and Docker deployment.
 
 Install from this repository with Node.js or Docker Compose. The deployment commands below build the service from the checked-out source.
-The current source version is `0.3.0`; no npm package or public Docker image has been published.
 
 ## Table of contents
 

@@ -1,7 +1,5 @@
 # Release checklist
 
-当前仓库版本为 `0.3.0`，源码发布于 GitHub。本项目尚未发布 npm 包或公共 Docker 镜像；`package.json` 的 `private: true` 防止误发布，但不影响源码构建和本地打包。
-
 ## 公开仓库维护
 
 - 保持 package 的 repository、homepage、bugs 与本仓库一致；不要沿用上游身份。
