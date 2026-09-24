@@ -2784,6 +2784,7 @@ test("a failed replay-guard write prevents injection and leaves a safe retry", a
   }, "codex-tool-replay-guard-write-");
 });
 
+/** Three serial turns and faulted persistence may exceed a loaded runner's default timeout. */
 test("post-handoff bookkeeping failures do not retract the response or permit replay", async () => {
   await withTempDir(async (directory) => {
     const fake = new ToolAppServer();
@@ -2846,7 +2847,7 @@ test("post-handoff bookkeeping failures do not retract the response or permit re
       await proxy.close();
     }
   }, "codex-tool-best-effort-state-");
-});
+}, 15000);
 
 test("generation changes fall back without consuming the original tool checkpoint", async () => {
   await withTempDir(async (directory) => {
