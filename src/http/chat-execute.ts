@@ -1,0 +1,1213 @@
+import type { JsonRpcTransport } from "../app-server/json-rpc.js";
+import { IngressQueue, type IngressEvent } from "../sessions/ingress.js";
+import { matchesTurn } from "../sessions/correlation.js";
+import type { ThreadConfigResolver } from "../app-server/windows-sandbox.js";
+import { bindingHash, record } from "../core/canonical.js";
+import type { Logger } from "../core/logger.js";
+import {
+  policyBindingHash,
+  type EffectivePolicy,
+  type PolicyRequirements,
+} from "../core/policy.js";
+import {
+  ZERO_TOKEN_USAGE,
+  type TokenUsageCounters,
+} from "../core/token-usage.js";
+import {
+  type ContinuationCoordinator,
+  type PendingToolCall,
+  type ResponseRecord,
+  type StoredToolCall,
+  type ThreadBinding,
+  type ThreadLease,
+} from "../continuation/state.js";
+import {
+  diagnoseUnexposedNotification,
+  EventNormalizer,
+  isEstablishedUnrelatedNotification,
+  notificationBehavior,
+  type NormalizedEvent,
+  type Usage,
+} from "./chat-normalize.js";
+import {
+  freshExecutionHistory,
+  toFunctionCallItem,
+  toFunctionCallOutputItem,
+  toBaseInstructions,
+  toHistoryItem,
+  toHistoryItems,
+  validateFallbackHistory,
+  validateToolResults,
+  type ChatMessage,
+  type ChatRequest,
+} from "./chat-validate.js";
+import { HttpError, toolCorrelationErrorForStatus } from "./errors.js";
+import {
+  usageLimitErrorResolver,
+  type UsageLimitErrorResolver,
+} from "./quota.js";
+
+/** Proxy-created thread subscriptions with raw boundaries on each transport. */
+const RAW_RESPONSE_THREADS = new WeakMap<JsonRpcTransport, Set<string>>();
+
+/** Dependencies used by one Chat Completions request. */
+export interface ChatHandlerOptions {
+  /** Request accounting observes normalized metadata, never message bodies. */
+  observe?:
+    | ((value: { model?: string; usage?: Usage; error?: string }) => void)
+    | undefined;
+  rpc: JsonRpcTransport;
+  log: Logger;
+  requestId: string;
+  signal: AbortSignal;
+  continuations: ContinuationCoordinator;
+  root: string;
+  requirements: PolicyRequirements;
+  resolveThreadConfig?: ThreadConfigResolver | undefined;
+  implicitToolContinuation: boolean;
+}
+
+/** Fixed local reasons a continuation admission selects fresh execution. */
+export type ContinuationFallbackReason =
+  | "unknown_previous_response_id"
+  | "unknown_tool_call_id"
+  | "expired_previous_response_id"
+  | "expired_tool_continuation"
+  | "superseded_previous_response_id"
+  | "ambiguous_tool_call_id"
+  | "tool_results_required"
+  | "continuation_model_mismatch"
+  | "continuation_reasoning_effort_mismatch"
+  | "continuation_generation_mismatch"
+  | "continuation_cwd_mismatch"
+  | "continuation_tools_mismatch"
+  | "continuation_policy_mismatch"
+  | "raw_response_capability_unavailable"
+  | "thread_busy";
+
+/** One eagerly prepared execution with cleanup independent of generator startup. */
+export interface ExecutionSession {
+  events: AsyncGenerator<NormalizedEvent>;
+  instructionSources: string[];
+  threadReused: boolean;
+  dispose(): Promise<void>;
+}
+
+/** Shared mutable lifecycle state for one app-server turn. */
+interface TurnHandle {
+  threadId?: string;
+  turnId?: string;
+  rawResponseBoundaries: boolean;
+  terminal: boolean;
+  lease?: ThreadLease;
+}
+
+/** Setup output shared by ready and pending-tool continuation paths. */
+interface ContinuationSetup {
+  usageBaseline: TokenUsageCounters | undefined;
+  instructionSources: string[];
+}
+
+/** One synchronous local continuation decision made before any app-server RPC. */
+type ContinuationAdmission =
+  | { type: "fresh"; reason?: ContinuationFallbackReason }
+  | {
+      type: "reuse";
+      responseId: string;
+      record: ResponseRecord;
+      /** Validated results for the selected pending batch, keyed by call ID. */
+      results?: Map<string, string>;
+      /**
+       * User messages following the selected result block. The final one is
+       * the new turn's input; earlier ones are injected after the pairs.
+       */
+      suffixUsers?: ChatMessage[];
+    };
+
+/** The reuse branch of {@link ContinuationAdmission}. */
+type ReuseAdmission = Extract<ContinuationAdmission, { type: "reuse" }>;
+
+/**
+ * Absolute deadline for terminal usage collection, normally a backstop for a
+ * missing idle boundary. A request-timeout abort can end collection sooner.
+ */
+const TERMINAL_USAGE_WAIT_MS = 10_000;
+
+/** Fixed window after idle for late usage updates, including corrected counts. */
+const IDLE_USAGE_GRACE_MS = 1000;
+
+/** Runs or resumes a Codex thread and yields its normalized event stream. */
+export async function execute(
+  request: ChatRequest,
+  options: ChatHandlerOptions,
+  responseId: string,
+): Promise<ExecutionSession> {
+  const queue = new IngressQueue((call) => rejectDynamicCall(options, call));
+  const dynamicToolNames = new Set(
+    request.dynamicTools
+      .map((tool) => tool.name)
+      .filter((name): name is string => typeof name === "string"),
+  );
+  const historicalToolCallIds = new Set(
+    request.messages.flatMap((message) => [
+      ...(message.toolCalls ?? []).map((call) => call.id),
+      ...(message.internalToolCallIds ?? []),
+    ]),
+  );
+  const handle: TurnHandle = {
+    rawResponseBoundaries: false,
+    terminal: false,
+  };
+  const onNotification = (method: string, params: unknown): void => {
+    if (method === "rawResponseItem/completed") {
+      if (
+        isEstablishedUnrelatedNotification(
+          params,
+          handle.threadId,
+          handle.turnId,
+        )
+      )
+        return;
+      const call = rawDynamicToolCall(
+        params,
+        dynamicToolNames,
+        historicalToolCallIds,
+      );
+      if (call) queue.enqueue({ type: "raw_dynamic_tool", call, params });
+      else
+        // Keep only correlation, not provider payloads, to invalidate an older
+        // boundary even when the next raw item is private/internal activity.
+        queue.enqueue({
+          type: "notification",
+          method,
+          params: {
+            threadId: record(params)?.threadId,
+            turnId: record(params)?.turnId,
+          },
+        });
+      return;
+    }
+    const behavior = notificationBehavior(method);
+    if (behavior === "diagnose") {
+      diagnoseUnexposedNotification(method, params, options.rpc, options.log);
+      return;
+    }
+    if (behavior === "ignore") return;
+    if (behavior === "lifecycle") {
+      // Thread lifecycle transitions describe the thread, not one turn, so they
+      // are correlated by thread alone and must bypass the turn-id filter below.
+      if (handle.threadId && record(params)?.threadId !== handle.threadId)
+        return;
+      queue.enqueue({ type: "notification", method, params });
+      return;
+    }
+    // Notifications can arrive while thread/start or turn/start is still
+    // resolving. Once both identifiers are established, discard unrelated work
+    // before it consumes this request's bounded ingress budget.
+    if (
+      isEstablishedUnrelatedNotification(params, handle.threadId, handle.turnId)
+    )
+      return;
+    const item = record(record(params)?.item);
+    if (
+      (method === "item/started" || method === "item/completed") &&
+      item?.type === "dynamicToolCall"
+    ) {
+      // The server request is authoritative and carries the responder ID; using
+      // notification lifecycle messages would expose the same call twice.
+      return;
+    }
+    queue.enqueue({ type: "notification", method, params });
+  };
+  const onToolRequest = (toolRequest: PendingToolCall): void => {
+    queue.enqueue({ type: "dynamic_tool", call: toolRequest });
+  };
+  const onClose = (error: Error): void => {
+    queue.failTransport(error);
+  };
+  options.rpc.on("notification", onNotification);
+  options.rpc.once("close", onClose);
+  let disposed = false;
+  const binding: ThreadBinding = {
+    model: request.model,
+    ...(request.reasoningEffort
+      ? { reasoningEffort: request.reasoningEffort }
+      : {}),
+    cwd: request.policy.cwd,
+    toolsHash: bindingHash(request.dynamicTools),
+    policyHash: policyBindingHash(request.policy),
+    ...(request.generation
+      ? { generationHash: bindingHash(request.generation) }
+      : {}),
+  };
+  const abort = async (): Promise<void> => {
+    if (handle.threadId && handle.turnId && !handle.terminal) {
+      // Tombstone before the round trip: a lost or timed-out interrupt response
+      // does not prove the turn survived, and this execution is being torn down
+      // either way, so its remaining callbacks are stale whatever the outcome.
+      options.continuations.markTurnInterrupted(handle.threadId, handle.turnId);
+      try {
+        await options.rpc.request("turn/interrupt", {
+          threadId: handle.threadId,
+          turnId: handle.turnId,
+        });
+      } catch {
+        // Cancellation is best-effort during request cleanup.
+      }
+    }
+  };
+  const onAbort = (): void => {
+    // Interrupt is best-effort, but waking the consumer is mandatory: a wedged
+    // app-server may never emit the terminal event that previously released it.
+    queue.notify();
+    void abort();
+  };
+  const cleanup = async (): Promise<void> => {
+    if (disposed) return;
+    disposed = true;
+    await abort();
+    options.signal.removeEventListener("abort", onAbort);
+    options.rpc.off("notification", onNotification);
+    options.rpc.off("close", onClose);
+    if (handle.threadId) {
+      // The thread is never held across responses: a tool-call turn was
+      // interrupted at its batch, so nothing app-server-side stays pending.
+      handle.lease?.release();
+    }
+    queue.rejectQueuedDynamicCalls();
+  };
+  options.signal.addEventListener("abort", onAbort, { once: true });
+  let usageBaseline: TokenUsageCounters | undefined;
+  let instructionSources: string[];
+  let threadReused: boolean;
+  try {
+    assertDispatchable(options);
+    const admission = prepareContinuation(
+      request,
+      options,
+      binding,
+      handle,
+      onToolRequest,
+    );
+    if (admission.type === "reuse") {
+      const continuation = await resumeContinuation(
+        request,
+        options,
+        admission,
+        handle,
+      );
+      usageBaseline = continuation.usageBaseline;
+      instructionSources = continuation.instructionSources;
+      // Reuse is reported only after the mapped thread has passed preflight,
+      // resumed with the expected ID, and accepted its next turn.
+      threadReused = true;
+    } else {
+      assertDispatchable(options);
+      if (admission.reason) {
+        validateFallbackHistory(request.messages, {
+          allowUnansweredCalls: admission.reason === "tool_results_required",
+        });
+        // One diagnostic per dispatched fallback: fixed reason and request ID
+        // only, so transcripts, tool arguments, and raw thread IDs stay out
+        // of logs. Emitted after the gates that can still reject the request,
+        // so a cancelled or unpaired fallback never logs an execution that
+        // never started.
+        options.log("info", "continuation_fresh_fallback", {
+          request_id: options.requestId,
+          reason: admission.reason,
+        });
+      }
+      instructionSources = await startFreshThread(
+        request,
+        options,
+        handle,
+        onToolRequest,
+      );
+      // A thread this request created has provably consumed nothing yet.
+      usageBaseline = ZERO_TOKEN_USAGE;
+      threadReused = false;
+    }
+  } catch (error) {
+    // Setup failures occur before HTTP headers, but still must release any
+    // ownership acquired by an earlier setup step.
+    await cleanup();
+    throw error;
+  }
+  // Constructed only once the attribution boundary is known, so no notification
+  // can be normalized against a baseline this response did not begin from.
+  const normalizer = new EventNormalizer(
+    usageBaseline,
+    {
+      log: options.log,
+      requestId: options.requestId,
+    },
+    request.generation?.outputSchema !== undefined,
+  );
+  const events =
+    (async function* streamExecution(): AsyncGenerator<NormalizedEvent> {
+      let failed = false;
+      // Constructed only when a turn actually fails; memoized across duplicate
+      // terminal events so one response performs at most one account read.
+      let quotaResolver: UsageLimitErrorResolver | undefined;
+      let pendingFinishReason: NormalizedEvent["finishReason"];
+      let pendingUsage: Usage | undefined;
+      // Tracks whether this response persisted a pending tool batch.
+      let capturedBatch: StoredToolCall[] | undefined;
+      // A raw completion may be consumed before app-server dispatches its
+      // callback. Retain it until another correlated raw item starts a response.
+      let precedingRawBoundary = false;
+      try {
+        while (!handle.terminal) {
+          queue.assertHealthy();
+          // Drain arrived events before treating abort as terminal.
+          if (queue.empty && options.signal.aborted)
+            throw new HttpError(
+              408,
+              "The request timed out or was disconnected.",
+              "server_error",
+              "request_timeout",
+            );
+          if (queue.empty) await queue.wait(options.signal);
+          queue.assertHealthy();
+          const head = queue.peek();
+          if (
+            head?.type === "raw_dynamic_tool" &&
+            !matchesTurn(head.params, handle.threadId, handle.turnId)
+          ) {
+            queue.shift();
+            continue;
+          }
+          if (
+            head?.type === "dynamic_tool" ||
+            head?.type === "raw_dynamic_tool"
+          ) {
+            if (!handle.rawResponseBoundaries)
+              throw new HttpError(
+                502,
+                "The resumed app-server thread cannot expose a dynamic tool batch boundary.",
+                "server_error",
+                "dynamic_tool_batch_boundary_unavailable",
+              );
+            const batchCompleted = await queue.waitForDynamicToolBatch(
+              options.signal,
+              handle.threadId!,
+              handle.turnId!,
+              precedingRawBoundary,
+            );
+            if (!batchCompleted)
+              throw new HttpError(
+                408,
+                "The request timed out or was disconnected.",
+                "server_error",
+                "request_timeout",
+              );
+            const { captured, stored } = captureToolBatch(
+              queue,
+              options,
+              responseId,
+              binding,
+              handle,
+            );
+            capturedBatch = stored;
+            // End the turn and flush usage even after client abort. The
+            // tombstone precedes the round trip because a lost interrupt
+            // response does not prove the turn survived, and this response
+            // fails either way, so its remaining callbacks are stale whatever
+            // the outcome.
+            options.continuations.markTurnInterrupted(
+              handle.threadId!,
+              handle.turnId!,
+            );
+            try {
+              await options.rpc.request("turn/interrupt", {
+                threadId: handle.threadId,
+                turnId: handle.turnId,
+              });
+              queue.markDynamicCallsCancelled();
+            } catch {
+              // Expire the batch unless interruption guarantees continuation.
+              options.continuations.protectPendingFromReplay(responseId);
+              throw new HttpError(
+                502,
+                "The app-server could not end the dynamic tool turn.",
+                "server_error",
+                "tool_turn_interrupt_failed",
+              );
+            }
+            // The interrupt already cancelled the captured requests app-server
+            // side, so they are deliberately left unanswered. Results are
+            // delivered by continuation, and a late response would only be
+            // logged there as an error for a request it no longer tracks.
+            for (const event of emitCapturedBatch(
+              captured,
+              normalizer,
+              handle,
+            )) {
+              // Emit usage after the authoritative tool_calls frame.
+              if (event.usage) pendingUsage = event.usage;
+              else if (event.finishReason) continue;
+              else yield event;
+            }
+            pendingFinishReason = "tool_calls";
+            handle.terminal = true;
+            continue;
+          }
+          // `peek` above already routed every dynamic event, and no await
+          // intervenes, so the head can only be a notification here.
+          const next = queue.shift();
+          if (next?.type !== "notification") continue;
+          if (!matchesTurn(next.params, handle.threadId, handle.turnId))
+            continue;
+          if (next.method === "rawResponseItem/completed") {
+            precedingRawBoundary = false;
+            continue;
+          }
+          if (next.method === "rawResponse/completed")
+            precedingRawBoundary = true;
+          for (const event of normalizer.normalize(next.method, next.params)) {
+            if (event.terminalError) {
+              handle.terminal = true;
+              failed = true;
+              // This is the sole terminal lifecycle boundary. Resolving quota
+              // metadata here means an error notification and failed completion
+              // cannot trigger duplicate account reads or terminal frames.
+              quotaResolver ??= usageLimitErrorResolver(
+                options.rpc,
+                options.signal,
+              );
+              yield {
+                ...event,
+                terminalError: await quotaResolver.resolve(event.terminalError),
+              };
+            } else if (event.finishReason) {
+              // Persistence is part of successful completion. Do not expose a
+              // terminal success frame until the continuation can be recorded.
+              handle.terminal = true;
+              pendingFinishReason = event.finishReason;
+            } else if (event.usage) {
+              pendingUsage = event.usage;
+            } else {
+              yield event;
+            }
+          }
+        }
+        // Earlier usage may cover only part of the turn. Keep collecting for
+        // the full idle grace even after receiving counts or a correction.
+        if (!failed) {
+          const collected = await collectTerminalUsage(
+            queue,
+            normalizer,
+            handle,
+            options.signal,
+          );
+          if (collected.usage) pendingUsage = collected.usage;
+          if (!pendingUsage)
+            options.log("warn", "usage_unreported", {
+              request_id: options.requestId,
+              reason: collected.exitReason,
+              pending_tool_batch: Boolean(capturedBatch),
+            });
+        }
+        // Usage is optional output. Persisting the boundary for the next
+        // response is best-effort and must never fail a tool handoff that is
+        // already durable.
+        if (capturedBatch && !failed)
+          options.continuations.recordPendingUsage(
+            responseId,
+            normalizer.usageBoundary(),
+          );
+        if (
+          !capturedBatch &&
+          !failed &&
+          handle.threadId &&
+          !options.continuations.recordReady(
+            responseId,
+            handle.threadId,
+            binding,
+            normalizer.usageBoundary(),
+          )
+        )
+          throw new Error(
+            "App-server transport was replaced before completion.",
+          );
+        if (!failed) {
+          // Deliver usage once, before clients can stop on the finish reason.
+          if (pendingUsage) yield { usage: pendingUsage };
+          if (pendingFinishReason) yield { finishReason: pendingFinishReason };
+        }
+      } catch (error) {
+        // Failures must interrupt the app-server turn before ownership is released;
+        // otherwise work could continue without an HTTP consumer.
+        await abort();
+        // The failed execution is terminal from the proxy's perspective. Mark it
+        // before cleanup so the same best-effort interrupt is not sent twice.
+        handle.terminal = true;
+        throw error;
+      } finally {
+        await cleanup();
+      }
+    })();
+  return { events, instructionSources, threadReused, dispose: cleanup };
+}
+
+/**
+ * Consumes notifications that follow the turn's terminal event through the
+ * thread's idle boundary, trailing-usage grace, fixed hang backstop, or abort.
+ * The turn already succeeded here, so every terminal condition merely stops
+ * collection and reports its reason without retracting completed work.
+ */
+async function collectTerminalUsage(
+  queue: IngressQueue,
+  normalizer: EventNormalizer,
+  handle: TurnHandle,
+  signal: AbortSignal,
+): Promise<{
+  usage: Usage | undefined;
+  exitReason:
+    | "idle_grace_expired"
+    | "backstop_expired"
+    | "aborted"
+    | "transport_failed"
+    | "queue_overflowed";
+}> {
+  let usage: Usage | undefined;
+  let idleAt: number | undefined;
+  const deadline = Date.now() + TERMINAL_USAGE_WAIT_MS;
+  while (true) {
+    if (signal.aborted) return { usage, exitReason: "aborted" };
+    const failureReason = queue.failureReason;
+    if (failureReason) return { usage, exitReason: failureReason };
+    for (const event of queue.drainNotifications()) {
+      if (
+        notificationBehavior(event.method) === "lifecycle" &&
+        isIdleThreadStatus(event.params, handle.threadId)
+      ) {
+        idleAt ??= Date.now();
+        continue;
+      }
+      if (!matchesTurn(event.params, handle.threadId, handle.turnId)) continue;
+      for (const normalized of normalizer.normalize(event.method, event.params))
+        // Only usage is recovered here. Every other late event would have to
+        // follow the terminal frame this response has already committed to.
+        if (normalized.usage) usage = normalized.usage;
+    }
+    const now = Date.now();
+    if (idleAt !== undefined && now >= idleAt + IDLE_USAGE_GRACE_MS)
+      return { usage, exitReason: "idle_grace_expired" };
+    if (now >= deadline) return { usage, exitReason: "backstop_expired" };
+    const ready = (): boolean => queue.hasNotification;
+    const waitUntil = Math.min(
+      deadline,
+      idleAt === undefined ? deadline : idleAt + IDLE_USAGE_GRACE_MS,
+    );
+    await queue.wait(signal, { ready, timeoutMs: waitUntil - now });
+  }
+}
+
+/** Recognizes the authoritative idle boundary for one completed thread. */
+function isIdleThreadStatus(
+  value: unknown,
+  threadId: string | undefined,
+): boolean {
+  const params = record(value);
+  return Boolean(
+    params &&
+    params.threadId === threadId &&
+    record(params.status)?.type === "idle",
+  );
+}
+
+/** Converts one in-flight call to its durable, injectable representation. */
+function toStoredToolCall(call: PendingToolCall): StoredToolCall {
+  return {
+    callId: call.callId,
+    name: call.name,
+    // Stringified exactly once here, so the persisted arguments are
+    // byte-identical to what the response emits and what a continuation's
+    // replayed assistant message must repeat.
+    arguments: JSON.stringify(call.arguments ?? {}),
+  };
+}
+
+/** Extracts one declared direct function call from an opted-in raw item. */
+function rawDynamicToolCall(
+  value: unknown,
+  dynamicToolNames: ReadonlySet<string>,
+  historicalToolCallIds: ReadonlySet<string>,
+): StoredToolCall | undefined {
+  const item = record(record(value)?.item);
+  if (
+    item?.type !== "function_call" ||
+    typeof item.call_id !== "string" ||
+    typeof item.name !== "string" ||
+    typeof item.arguments !== "string" ||
+    !dynamicToolNames.has(item.name) ||
+    historicalToolCallIds.has(item.call_id)
+  )
+    return undefined;
+  return {
+    callId: item.call_id,
+    name: item.name,
+    arguments: item.arguments,
+  };
+}
+
+/** Captures and durably records the current dynamic-tool batch synchronously. */
+function captureToolBatch(
+  queue: IngressQueue,
+  options: ChatHandlerOptions,
+  responseId: string,
+  binding: ThreadBinding,
+  handle: TurnHandle,
+): {
+  captured: IngressEvent[];
+  stored: StoredToolCall[];
+} {
+  const captured = queue.drainAll();
+  const calls = captured
+    .filter(
+      (event): event is Extract<IngressEvent, { type: "dynamic_tool" }> =>
+        event.type === "dynamic_tool",
+    )
+    .map((event) => event.call);
+  if (
+    calls.some(
+      (call) =>
+        call.threadId !== handle.threadId || call.turnId !== handle.turnId,
+    )
+  ) {
+    for (const call of calls)
+      options.rpc.respondError(call.request.id, {
+        code: -32602,
+        message: "Dynamic tool correlation mismatch",
+      });
+    throw new Error("Dynamic tool request did not match the active turn.");
+  }
+  const stored: StoredToolCall[] = [];
+  const seen = new Set<string>();
+  for (const event of captured) {
+    const call =
+      event.type === "raw_dynamic_tool"
+        ? event.call
+        : event.type === "dynamic_tool"
+          ? toStoredToolCall(event.call)
+          : undefined;
+    if (!call || seen.has(call.callId)) continue;
+    seen.add(call.callId);
+    stored.push(call);
+  }
+  try {
+    options.continuations.recordPendingTool(
+      responseId,
+      handle.threadId!,
+      binding,
+      stored,
+    );
+  } catch (error) {
+    // Reject captured responders if durable persistence fails.
+    for (const call of calls) rejectDynamicCall(options, call);
+    throw error;
+  }
+  return { captured, stored };
+}
+
+/** Normalizes one captured batch synchronously with the shared normalizer. */
+function* emitCapturedBatch(
+  captured: IngressEvent[],
+  normalizer: EventNormalizer,
+  handle: TurnHandle,
+): Generator<NormalizedEvent> {
+  const emittedCalls = new Set<string>();
+  for (const event of captured) {
+    if (event.type === "notification") {
+      if (!matchesTurn(event.params, handle.threadId, handle.turnId)) continue;
+      yield* normalizer.normalize(event.method, event.params);
+      continue;
+    }
+    if (
+      event.type === "raw_dynamic_tool" &&
+      !matchesTurn(event.params, handle.threadId, handle.turnId)
+    )
+      continue;
+    const call =
+      event.type === "raw_dynamic_tool"
+        ? event.call
+        : toStoredToolCall(event.call);
+    if (emittedCalls.has(call.callId)) continue;
+    emittedCalls.add(call.callId);
+    yield normalizer.dynamicToolCall(call);
+  }
+}
+
+/**
+ * Decides synchronously, before any app-server RPC, whether this request
+ * continues a mapped thread or executes on a fresh one. Every named local
+ * unavailability selects fresh execution with a fixed reason; duplicate client
+ * IDs, results that fail validation against a live pending batch, and tool
+ * results against a live ready mapping remain typed client errors. The thread
+ * lease is claimed last, only for reuse, and is attached to the handle only
+ * after acquisition so a fresh result never retains the rejected source's
+ * thread or lease.
+ */
+function prepareContinuation(
+  request: ChatRequest,
+  options: ChatHandlerOptions,
+  binding: ThreadBinding,
+  handle: TurnHandle,
+  onToolRequest: (toolRequest: PendingToolCall) => void,
+): ContinuationAdmission {
+  let responseId = request.previousResponseId;
+  if (!responseId && request.terminalToolResults.length) {
+    const callIds = request.terminalToolResults.map(
+      (message) => message.toolCallId!,
+    );
+    try {
+      responseId = options.continuations.findPendingResponse(callIds);
+    } catch (error) {
+      const reason = implicitLookupFallbackReason(error);
+      if (reason === undefined) throw error;
+      return { type: "fresh", reason };
+    }
+  }
+  if (!responseId) return { type: "fresh" };
+  const stored = options.continuations.store.get(responseId);
+  if (!stored) return { type: "fresh", reason: "unknown_previous_response_id" };
+  // Pending-result validation precedes binding, capability, and contention
+  // checks so a live mapping's client errors surface before any fallback
+  // consideration.
+  let results: Map<string, string> | undefined;
+  let suffixUsers: ChatMessage[] | undefined;
+  if (stored.state === "pending_tool") {
+    // An explicit selector may continue a complete result block followed by
+    // consecutive user messages. The implicit selector resolves only a
+    // terminal block, which this same selection represents with an empty
+    // suffix, so one view serves both without broadening implicit selection.
+    const batch = request.toolBatch;
+    // No submitted results means this request cannot resume the pending batch.
+    // Start independently without consuming or acquiring the source checkpoint.
+    if (!batch.results.length)
+      return { type: "fresh", reason: "tool_results_required" };
+    results = validateToolResults(
+      batch.assistant,
+      batch.results,
+      stored.pendingCalls!,
+    );
+    suffixUsers = batch.suffixUsers;
+  } else if (stored.state === "expired") {
+    return stored.pendingCalls?.length && request.terminalToolResults.length
+      ? { type: "fresh", reason: "expired_tool_continuation" }
+      : { type: "fresh", reason: "expired_previous_response_id" };
+  } else if (stored.state === "superseded") {
+    return { type: "fresh", reason: "superseded_previous_response_id" };
+  } else if (request.terminalToolResults.length) {
+    continuationFailure(409, "tool_results_without_pending_call");
+  }
+  if (stored.model !== binding.model)
+    return { type: "fresh", reason: "continuation_model_mismatch" };
+  if (stored.reasoningEffort !== binding.reasoningEffort)
+    return { type: "fresh", reason: "continuation_reasoning_effort_mismatch" };
+  if (stored.generationHash !== binding.generationHash)
+    return { type: "fresh", reason: "continuation_generation_mismatch" };
+  if (stored.cwd !== binding.cwd)
+    return { type: "fresh", reason: "continuation_cwd_mismatch" };
+  if (stored.toolsHash !== binding.toolsHash)
+    return { type: "fresh", reason: "continuation_tools_mismatch" };
+  if (stored.policyHash !== binding.policyHash)
+    return { type: "fresh", reason: "continuation_policy_mismatch" };
+  if (
+    request.dynamicTools.length &&
+    !rawResponseThreads(options.rpc).has(stored.threadId)
+  )
+    return { type: "fresh", reason: "raw_response_capability_unavailable" };
+  const lease = options.continuations.acquireThread(
+    stored.threadId,
+    onToolRequest,
+  );
+  if (!lease) return { type: "fresh", reason: "thread_busy" };
+  // threadId gates cleanup's lease release, so both attach together here,
+  // only after acquisition, and only on the reuse path.
+  handle.threadId = stored.threadId;
+  handle.lease = lease;
+  return {
+    type: "reuse",
+    responseId,
+    record: stored,
+    ...(results ? { results } : {}),
+    ...(suffixUsers ? { suffixUsers } : {}),
+  };
+}
+
+/**
+ * Classifies an implicit selector lookup failure into a fallback reason only
+ * for the named lookup-unavailability codes. Duplicate result IDs and generic
+ * store failures stay errors: neither means the requested continuation is
+ * merely unavailable.
+ */
+function implicitLookupFallbackReason(
+  error: unknown,
+): ContinuationFallbackReason | undefined {
+  if (!(error instanceof HttpError)) return undefined;
+  if (
+    error.code === "unknown_tool_call_id" ||
+    error.code === "expired_tool_continuation" ||
+    error.code === "ambiguous_tool_call_id"
+  )
+    return error.code;
+  return undefined;
+}
+
+/** Fails a request that can no longer execute before any RPC is issued. */
+function assertDispatchable(options: ChatHandlerOptions): void {
+  // Disposal and cancellation are lifecycle errors, never fallback reasons.
+  options.continuations.assertActive();
+  if (options.signal.aborted)
+    throw new HttpError(
+      408,
+      "The request timed out or was disconnected.",
+      "server_error",
+      "request_timeout",
+    );
+}
+
+/** Resumes and drives one admitted continuation on the shared turn handle. */
+async function resumeContinuation(
+  request: ChatRequest,
+  options: ChatHandlerOptions,
+  admission: ReuseAdmission,
+  handle: TurnHandle,
+): Promise<ContinuationSetup> {
+  const stored = admission.record;
+  const instructionSources = await resumeIdleThread(request, options, handle);
+  if (stored.state !== "pending_tool") {
+    await startTurn(request, options, handle);
+    return { usageBaseline: stored.usageTotal, instructionSources };
+  }
+  const pending = stored.pendingCalls!;
+  // The final suffix user message stays the turn input; every earlier suffix
+  // user joins the injection after the pairs, keeping its own message and
+  // order. No other transcript history is ever injected on the native path.
+  const earlierUsers = (admission.suffixUsers ?? []).slice(0, -1);
+  const items = [
+    ...pending.flatMap((call) => [
+      // Inject the complete pair because an unpaired output is ignored.
+      toFunctionCallItem(call),
+      toFunctionCallOutputItem(
+        call.callId,
+        admission.results!.get(call.callId)!,
+      ),
+    ]),
+    ...earlierUsers.flatMap((message) => {
+      const item = toHistoryItem(message);
+      // The role-preserving mapper skips content-less messages; validated
+      // user messages always carry string content, so nothing drops here.
+      return item ? [item] : [];
+    }),
+  ];
+  // Tombstone before injection to prevent replay after uncertain failure.
+  options.continuations.protectPendingFromReplay(admission.responseId);
+  try {
+    await options.rpc.request(
+      "thread/inject_items",
+      { threadId: handle.threadId, items },
+      options.signal,
+    );
+  } catch (error) {
+    // The tombstone blocks replay if the injection outcome is unknown.
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(
+      502,
+      "The app-server could not accept the tool results.",
+      "server_error",
+      "tool_result_injection_failed",
+    );
+  }
+  // Mark success best-effort; the tombstone already blocks replay.
+  options.continuations.recordPendingConsumed(admission.responseId);
+  await startTurn(request, options, handle);
+  return { usageBaseline: stored.usageTotal, instructionSources };
+}
+
+/** Gates on a resumable thread status and resumes it under this request's policy. */
+async function resumeIdleThread(
+  request: ChatRequest,
+  options: ChatHandlerOptions,
+  handle: TurnHandle,
+): Promise<string[]> {
+  let resumed: Record<string, unknown>;
+  try {
+    const read = asRecord(
+      await options.rpc.request(
+        "thread/read",
+        { threadId: handle.threadId, includeTurns: false },
+        options.signal,
+      ),
+      "thread/read",
+    );
+    const readThread = asRecord(read.thread, "thread/read.thread");
+    const status = record(readThread.status)?.type;
+    if (status === "active") continuationFailure(409, "thread_busy");
+    // Only protocol states that can safely enter thread/resume are accepted.
+    // Missing, malformed, and future status values fail closed.
+    if (status !== "idle" && status !== "notLoaded")
+      continuationFailure(409, "thread_not_resumable");
+    resumed = asRecord(
+      await options.rpc.request(
+        "thread/resume",
+        {
+          threadId: handle.threadId,
+          excludeTurns: true,
+          ...(await threadPolicyParams(request.policy, options, request)),
+        },
+        options.signal,
+      ),
+      "thread/resume",
+    );
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    continuationFailure(409, "thread_not_resumable");
+  }
+  const resumedThreadId = requiredId(resumed.thread, "thread/resume.thread");
+  // The durable mapping is authoritative. A mismatched resume result must
+  // never transfer ownership to, or start work on, an unexpected thread.
+  if (resumedThreadId !== handle.threadId)
+    continuationFailure(409, "thread_not_resumable");
+  handle.rawResponseBoundaries = rawResponseThreads(options.rpc).has(
+    handle.threadId,
+  );
+  return requiredStringArray(
+    resumed.instructionSources,
+    "thread/resume.instructionSources",
+  );
+}
+
+/** Starts one fresh durable thread and its initial turn. */
+async function startFreshThread(
+  request: ChatRequest,
+  options: ChatHandlerOptions,
+  handle: TurnHandle,
+  onToolRequest: (toolRequest: PendingToolCall) => void,
+): Promise<string[]> {
+  const started = asRecord(
+    await options.rpc.request(
+      "thread/start",
+      {
+        model: request.model,
+        ephemeral: false,
+        experimentalRawEvents: true,
+        // System messages become thread base instructions because app-server
+        // treats that field as the durable instruction channel.
+        baseInstructions: toBaseInstructions(request.messages),
+        ...(await threadPolicyParams(request.policy, options, request)),
+        ...environmentParams(request.policy),
+        ...(request.dynamicTools.length
+          ? { dynamicTools: request.dynamicTools }
+          : {}),
+      },
+      options.signal,
+    ),
+    "thread/start",
+  );
+  handle.threadId = requiredId(started.thread, "thread/start.thread");
+  const instructionSources = requiredStringArray(
+    started.instructionSources,
+    "thread/start.instructionSources",
+  );
+  rawResponseThreads(options.rpc).add(handle.threadId);
+  handle.rawResponseBoundaries = true;
+  acquireThread(handle, options, onToolRequest);
+  // Only a trailing user message becomes new turn input. Any other trailing
+  // non-system message joins injected history and the empty-input turn asks the
+  // model to continue from it. System messages are already represented by the
+  // thread base. A terminal tool-result block reaches this path only through
+  // fallback, whose admission check already required its complete preceding
+  // assistant batch; ordinary fresh requests keep their existing warn-and-drop
+  // handling of unpairable history.
+  const prior = toHistoryItems(freshExecutionHistory(request.messages));
+  if (prior.unansweredCalls || prior.orphanResults)
+    options.log("warn", "unpaired_history_tool_items_dropped", {
+      request_id: options.requestId,
+      unanswered_calls: prior.unansweredCalls,
+      orphan_results: prior.orphanResults,
+    });
+  if (prior.items.length)
+    await options.rpc.request(
+      "thread/inject_items",
+      { threadId: handle.threadId, items: prior.items },
+      options.signal,
+    );
+  await startTurn(request, options, handle);
+  return instructionSources;
+}
+
+/** Claims a known thread and installs its dynamic-tool responder. */
+function acquireThread(
+  handle: TurnHandle,
+  options: ChatHandlerOptions,
+  onToolRequest: (toolRequest: PendingToolCall) => void,
+): void {
+  const lease = options.continuations.acquireThread(
+    handle.threadId!,
+    onToolRequest,
+  );
+  if (!lease) continuationFailure(409, "thread_busy");
+  handle.lease = lease;
+}
+
+/** Starts the next turn and records its validated identifier in place. */
+async function startTurn(
+  request: ChatRequest,
+  options: ChatHandlerOptions,
+  handle: TurnHandle,
+): Promise<void> {
+  const last = request.messages.at(-1)!;
+  // Only a trailing user message is new turn input. Other messages already
+  // supply history, tool-result pairs, or system base instructions; app-server
+  // accepts an empty input list to continue from that context.
+  const input =
+    last.role === "user"
+      ? (last.contentParts?.flatMap((part) =>
+          part.type === "file"
+            ? []
+            : [
+                part.type === "text"
+                  ? { type: "text", text: part.text, text_elements: [] }
+                  : part.type === "image"
+                    ? {
+                        type: "image",
+                        url: part.url,
+                        ...(part.detail ? { detail: part.detail } : {}),
+                      }
+                    : { type: "audio", url: part.url },
+              ],
+        ) ?? [{ type: "text", text: last.content!, text_elements: [] }])
+      : [];
+  const turn = asRecord(
+    await options.rpc.request(
+      "turn/start",
+      {
+        threadId: handle.threadId,
+        model: request.model,
+        ...(request.reasoningEffort ? { effort: request.reasoningEffort } : {}),
+        ...(request.generation?.outputSchema
+          ? { outputSchema: request.generation.outputSchema }
+          : {}),
+        ...(request.generation?.serviceTier
+          ? { serviceTierForTurn: request.generation.serviceTier }
+          : {}),
+        // App-server controls reasoning work and exposed summaries separately.
+        // Expose detailed summaries by default, but honor an explicit request
+        // for no reasoning by disabling its summary as well.
+        summary: request.reasoningEffort === "none" ? "none" : "detailed",
+        input,
+        ...turnPolicyParams(request.policy),
+      },
+      options.signal,
+    ),
+    "turn/start",
+  );
+  handle.turnId = requiredId(turn.turn, "turn/start.turn");
+}
+
+/** Rejects a dynamic request that cannot be safely retained or suspended. */
+function rejectDynamicCall(
+  options: ChatHandlerOptions,
+  call: PendingToolCall,
+): void {
+  try {
+    options.rpc.respondError(call.request.id, {
+      code: -32000,
+      message: "Active turn ended before the dynamic tool batch was captured",
+    });
+  } catch {
+    // A closed transport has already made the request unanswerable.
+  }
+}
+
+/** Returns the raw-boundary subscriptions known on one transport generation. */
+function rawResponseThreads(rpc: JsonRpcTransport): Set<string> {
+  const existing = RAW_RESPONSE_THREADS.get(rpc);
+  if (existing) return existing;
+  const created = new Set<string>();
+  RAW_RESPONSE_THREADS.set(rpc, created);
+  return created;
+}
+
+/** Builds native thread settings shared by thread start and resume. */
+async function threadPolicyParams(
+  policy: EffectivePolicy,
+  options: ChatHandlerOptions,
+  request: ChatRequest,
+): Promise<Record<string, unknown>> {
+  const config = {
+    web_search: policy.webSearch,
+    ...(options.resolveThreadConfig
+      ? await options.resolveThreadConfig(policy.cwd, options.signal)
+      : {}),
+    ...(request.generation?.verbosity
+      ? { model_verbosity: request.generation.verbosity }
+      : {}),
+  };
+  return {
+    cwd: policy.cwd,
+    sandbox: policy.threadSandbox,
+    approvalPolicy: policy.approvalPolicy,
+    ...(policy.approvalsReviewer
+      ? { approvalsReviewer: policy.approvalsReviewer }
+      : {}),
+    config,
+  };
+}
+
+/**
+ * Builds the no-environment override realizing the public `disabled` sandbox.
+ * `environments: []` removes the execution environment entirely; thread/resume
+ * has no such field in the pinned protocol, so thread/start sets it sticky and
+ * every turn/start reapplies it to protect resumed disabled threads.
+ */
+function environmentParams(policy: EffectivePolicy): Record<string, unknown> {
+  return policy.sandbox === "disabled" ? { environments: [] } : {};
+}
+
+/** Builds sticky turn overrides so prior thread state is never inherited. */
+function turnPolicyParams(policy: EffectivePolicy): Record<string, unknown> {
+  return {
+    cwd: policy.cwd,
+    approvalPolicy: policy.approvalPolicy,
+    ...(policy.approvalsReviewer
+      ? { approvalsReviewer: policy.approvalsReviewer }
+      : {}),
+    sandboxPolicy: policy.sandboxPolicy,
+    ...environmentParams(policy),
+  };
+}
+
+/** Throws the stable OpenAI-shaped error for continuation failures. */
+function continuationFailure(status: number, code: string): never {
+  throw toolCorrelationErrorForStatus(
+    status,
+    "The previous response cannot be continued.",
+    code,
+    "previous_response_id",
+  );
+}
+
+/** Requires an app-server response object. */
+function asRecord(value: unknown, location: string): Record<string, unknown> {
+  const result = record(value);
+  if (!result) throw new Error(`Invalid ${location} response.`);
+  return result;
+}
+
+/** Requires an object with a string identifier in an app-server response. */
+function requiredId(value: unknown, location: string): string {
+  const result = asRecord(value, location);
+  if (typeof result.id !== "string") throw new Error("Invalid app-server id.");
+  return result.id;
+}
+
+/** Requires an app-server response field containing only string paths. */
+function requiredStringArray(value: unknown, location: string): string[] {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string"))
+    throw new Error(`Invalid ${location} response.`);
+  return [...value];
+}

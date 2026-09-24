@@ -1,0 +1,767 @@
+import type { JsonRpcTransport } from "../app-server/json-rpc.js";
+import { record } from "../core/canonical.js";
+import type { Logger } from "../core/logger.js";
+import {
+  subtractTokenUsage,
+  tokenUsageCounters,
+  type TokenUsageCounters,
+} from "../core/token-usage.js";
+import type { StoredToolCall } from "../continuation/state.js";
+import { notificationTurnId } from "../sessions/correlation.js";
+import { appServerError, serverOverloadedError, HttpError } from "./errors.js";
+import { usageLimitError } from "./quota.js";
+import { AgentText } from "./agent-text.js";
+
+/** Standard token usage, with details present only when app-server reports them. */
+export interface Usage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details?: { cached_tokens: number };
+  completion_tokens_details?: { reasoning_tokens: number };
+}
+
+/** Request-scoped logger context for usage-attribution degradation warnings. */
+export interface NormalizerDiagnostics {
+  log: Logger;
+  requestId: string;
+}
+
+/** Function metadata shared by normalized calls and their correlated results. */
+export interface NormalizedFunction {
+  name: string;
+  arguments: string;
+}
+
+/** One function-shaped call with its stable streaming index. */
+export interface NormalizedToolCall {
+  index: number;
+  id: string;
+  type: "function";
+  function: NormalizedFunction;
+}
+
+/** Lifecycle data attached to one normalized tool result. */
+export interface NormalizedToolResultData {
+  status: string;
+  content?: unknown;
+  exit_code?: unknown;
+  error?: NormalizedError;
+  progress_type?: string;
+  stream?: string;
+  message?: string;
+  patch?: unknown;
+}
+
+/** One self-correlating result for a normalized function-shaped call. */
+export interface NormalizedToolResult {
+  id: string;
+  type: "function";
+  function: NormalizedFunction;
+  result: NormalizedToolResultData;
+}
+
+/** Public fields emitted by one normalized lifecycle event. */
+export interface NormalizedDelta {
+  content?: string;
+  reasoning?: string;
+  tool_calls?: NormalizedToolCall[];
+  tool_results?: NormalizedToolResult[];
+}
+
+/** Structured public subset of an app-server tool error. */
+export interface NormalizedError {
+  message?: string;
+  code?: string;
+}
+
+/** One normalized delta shared by streaming and aggregate output. */
+export interface NormalizedEvent {
+  delta?: NormalizedDelta;
+  finishReason?: "stop" | "length" | "tool_calls" | "content_filter";
+  usage?: Usage;
+  terminalError?: HttpError;
+}
+
+/** Aggregate fields derived from the shared normalized event stream. */
+export interface AggregatedNormalizedEvents {
+  content: string;
+  reasoning: string;
+  toolCalls: NormalizedToolCall[];
+  toolResults: NormalizedToolResult[];
+  finishReason: string | null;
+  usage?: Usage;
+}
+
+/** Maximum distinct unexposed methods diagnosed for one app-server transport. */
+const MAX_DIAGNOSTIC_METHODS = 32;
+
+/** Explicit handling selected for one pinned app-server notification method. */
+export type NotificationBehavior =
+  "normalize" | "progress" | "lifecycle" | "boundary" | "ignore" | "diagnose";
+
+/** Classifies pinned notification methods without implicitly exposing them. */
+const NOTIFICATION_BEHAVIORS = new Map<string, NotificationBehavior>([
+  ["error", "normalize"],
+  ["item/agentMessage/delta", "normalize"],
+  ["item/autoApprovalReview/started", "diagnose"],
+  ["item/autoApprovalReview/completed", "diagnose"],
+  ["item/commandExecution/outputDelta", "progress"],
+  ["item/commandExecution/terminalInteraction", "diagnose"],
+  ["item/fileChange/outputDelta", "progress"],
+  ["item/fileChange/patchUpdated", "progress"],
+  ["item/mcpToolCall/progress", "progress"],
+  ["item/plan/delta", "progress"],
+  ["item/reasoning/summaryPartAdded", "ignore"],
+  ["item/reasoning/summaryTextDelta", "normalize"],
+  ["item/reasoning/textDelta", "normalize"],
+  ["item/started", "normalize"],
+  ["item/completed", "normalize"],
+  // Direct declared function calls are consumed by the execution coordinator;
+  // every other provider-native raw item remains unexposed.
+  ["rawResponseItem/completed", "ignore"],
+  // The event closes one upstream Responses completion and therefore one
+  // dynamic-tool callback batch. Its per-request usage remains unexposed.
+  ["rawResponse/completed", "boundary"],
+  ["serverRequest/resolved", "ignore"],
+  ["thread/status/changed", "lifecycle"],
+  ["thread/tokenUsage/updated", "normalize"],
+  ["turn/completed", "normalize"],
+]);
+
+/** Notification methods that the HTTP translation intentionally handles. */
+export const HANDLED_NOTIFICATION_METHODS: ReadonlySet<string> = new Set(
+  [...NOTIFICATION_BEHAVIORS]
+    .filter(([, behavior]) => behavior !== "diagnose")
+    .map(([method]) => method),
+);
+
+/** Unexposed notification methods diagnosed for each transport generation. */
+const DIAGNOSED_NOTIFICATION_METHODS = new WeakMap<
+  JsonRpcTransport,
+  Set<string>
+>();
+
+/** Returns the explicit behavior, diagnosing unclassified future methods. */
+export function notificationBehavior(method: string): NotificationBehavior {
+  return NOTIFICATION_BEHAVIORS.get(method) ?? "diagnose";
+}
+
+/** Aggregates normalized events for non-streaming output without HTTP state. */
+export async function aggregateNormalizedEvents(
+  events: AsyncIterable<NormalizedEvent> | Iterable<NormalizedEvent>,
+): Promise<AggregatedNormalizedEvents> {
+  let content = "";
+  let reasoning = "";
+  const toolCalls = new Map<number, NormalizedToolCall>();
+  const toolResults: NormalizedToolResult[] = [];
+  let finishReason: string | null = null;
+  let usage: Usage | undefined;
+  for await (const event of events) {
+    if (event.terminalError) throw event.terminalError;
+    if (typeof event.delta?.content === "string")
+      content += event.delta.content;
+    if (typeof event.delta?.reasoning === "string")
+      reasoning += event.delta.reasoning;
+    for (const call of event.delta?.tool_calls ?? [])
+      toolCalls.set(call.index, call);
+    toolResults.push(...(event.delta?.tool_results ?? []));
+    if (event.finishReason) finishReason = event.finishReason;
+    if (event.usage) usage = event.usage;
+  }
+  return {
+    content,
+    reasoning,
+    toolCalls: [...toolCalls.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, call]) => call),
+    toolResults,
+    finishReason,
+    ...(usage ? { usage } : {}),
+  };
+}
+
+/** Maintains stable item-to-choice indexes while normalizing interleaved events. */
+export class EventNormalizer {
+  readonly #agentText: AgentText;
+  readonly #toolCalls = new Map<string, NormalizedToolCall>();
+  readonly #reasoningSummaries = new Map<string, string>();
+  readonly #reasoningContent = new Map<string, string>();
+  #nextToolIndex = 0;
+  #sawClientTool = false;
+  readonly #usageBaseline: TokenUsageCounters | undefined;
+  readonly #diagnostics: NormalizerDiagnostics | undefined;
+  readonly #warnedReasons = new Set<string>();
+  #latestUsageTotal: TokenUsageCounters | undefined;
+  #cumulativeUsageValid = true;
+
+  /**
+   * Binds the exact cumulative total at this response's attribution boundary.
+   * The baseline is fixed for the normalizer's lifetime, so no observed usage
+   * can ever be attributed against a boundary it did not begin from.
+   */
+  constructor(
+    usageBaseline?: TokenUsageCounters,
+    diagnostics?: NormalizerDiagnostics,
+    structuredOutput = false,
+  ) {
+    this.#agentText = new AgentText(structuredOutput);
+    this.#usageBaseline = usageBaseline;
+    this.#diagnostics = diagnostics;
+  }
+
+  /**
+   * Returns the exact cumulative counter the next response must subtract from:
+   * the newest total this response reported, or the boundary it started from
+   * when app-server attributed nothing to it. Both are exact app-server values,
+   * so a response that could report no usage still leaves its successor a
+   * boundary that covers the model requests it could not report. A reset keeps the
+   * newest total, which remains the correct boundary even once subtraction has
+   * been abandoned for the rest of this response.
+   */
+  usageBoundary(): TokenUsageCounters | undefined {
+    const boundary = this.#latestUsageTotal ?? this.#usageBaseline;
+    return boundary ? { ...boundary } : undefined;
+  }
+
+  /**
+   * Converts one authoritative pending dynamic call to a function tool call.
+   * Notification lifecycle items are observational only: app-server can replay
+   * a resolved client call when a continuation starts, so only its server
+   * request may make this response end with `tool_calls`.
+   */
+  dynamicToolCall(call: StoredToolCall): NormalizedEvent {
+    this.#sawClientTool = true;
+    const publicCall = this.#allocateToolCall(
+      call.callId,
+      call.name,
+      call.arguments,
+    );
+    return { delta: { tool_calls: [publicCall] } };
+  }
+
+  /** Converts one app-server notification into zero or more public events. */
+  normalize(method: string, value: unknown): NormalizedEvent[] {
+    const params = record(value);
+    if (!params) return [];
+    if (
+      method === "item/agentMessage/delta" &&
+      typeof params.delta === "string"
+    )
+      return this.#agentText.normalize(method, params);
+    if (
+      method === "item/reasoning/summaryTextDelta" &&
+      typeof params.delta === "string"
+    ) {
+      if (typeof params.itemId === "string")
+        this.#reasoningSummaries.set(
+          params.itemId,
+          (this.#reasoningSummaries.get(params.itemId) ?? "") + params.delta,
+        );
+      return [{ delta: { reasoning: params.delta } }];
+    }
+    if (
+      method === "item/reasoning/textDelta" &&
+      typeof params.delta === "string"
+    ) {
+      if (typeof params.itemId === "string")
+        this.#reasoningContent.set(
+          params.itemId,
+          (this.#reasoningContent.get(params.itemId) ?? "") + params.delta,
+        );
+      return [{ delta: { reasoning: params.delta } }];
+    }
+    if (method === "thread/tokenUsage/updated") {
+      const tokenUsage = record(params.tokenUsage);
+      const total = tokenUsageCounters(tokenUsage?.total);
+      const last = record(tokenUsage?.last);
+      // A total whose delta this response never emitted must not advance the
+      // boundary, or the tokens between the old and new totals would be
+      // reported by no response at all. `last` is required by the protocol, so
+      // this only pins the invariant against a malformed notification.
+      if (!last) {
+        this.#warnDegraded("missing_last");
+        return [];
+      }
+      if (total) this.#latestUsageTotal = total;
+      const usage = this.#turnUsage(last, total);
+      return usage ? [{ usage }] : [];
+    }
+    if (method === "error") {
+      const error = record(params.error);
+      return [terminalEvent(error, "The app-server turn failed.")];
+    }
+    if (method === "turn/completed") {
+      const turn = record(params.turn);
+      const status = turn?.status;
+      if (status === "completed") {
+        try {
+          return [
+            ...(this.#sawClientTool ? [] : this.#agentText.finish()),
+            { finishReason: this.#sawClientTool ? "tool_calls" : "stop" },
+          ];
+        } catch (error) {
+          // The upstream turn has ended; report failure without interrupting
+          // an already-completed turn during execution cleanup.
+          if (error instanceof HttpError) return [{ terminalError: error }];
+          throw error;
+        }
+      }
+      if (status === "interrupted") return [{ finishReason: "length" }];
+      const error = record(turn?.error);
+      return [
+        terminalEvent(
+          status === "failed" ? error : undefined,
+          `The app-server turn ended with status ${String(status)}.`,
+        ),
+      ];
+    }
+    if (method === "item/started" || method === "item/completed") {
+      const item = record(params.item);
+      // Continuation turns replay resolved dynamic calls as lifecycle items.
+      // They are client-executed work, not provider activity, and must never
+      // mint an observational call/result pair or affect the finish reason.
+      if (item?.type === "dynamicToolCall") return [];
+      if (item?.type === "agentMessage")
+        return this.#agentText.normalize(method, params);
+      if (!item || item.type === "userMessage") return [];
+      if (item.type === "reasoning")
+        return method === "item/completed"
+          ? this.#completedReasoning(item)
+          : [];
+      if (
+        item.type === "webSearch" &&
+        method === "item/started" &&
+        !webSearchInputReady(item)
+      ) {
+        // app-server may start web search with a placeholder query/action and
+        // only fill in the actual request on item/completed. Do not publish
+        // placeholder arguments that telemetry consumers will treat as input.
+        return [];
+      }
+      return [
+        this.#internalItem(
+          method === "item/started" ? "started" : "completed",
+          item,
+        ),
+      ];
+    }
+    if (notificationBehavior(method) === "progress")
+      return [this.#internalProgress(method, params)];
+    return [];
+  }
+
+  /** Backfills reasoning omitted from deltas without repeating streamed text. */
+  #completedReasoning(item: Record<string, unknown>): NormalizedEvent[] {
+    const id = typeof item.id === "string" ? item.id : "";
+    const streamedSummary = this.#reasoningSummaries.get(id) ?? "";
+    const streamedContent = this.#reasoningContent.get(id) ?? "";
+    this.#reasoningSummaries.delete(id);
+    this.#reasoningContent.delete(id);
+
+    const reasoning =
+      reasoningRemainder(item.summary, streamedSummary) +
+      reasoningRemainder(item.content, streamedContent);
+    return reasoning ? [{ delta: { reasoning } }] : [];
+  }
+
+  /** Attributes every model request of the turn, not only the most recent one. */
+  #turnUsage(
+    last: Record<string, unknown>,
+    total: TokenUsageCounters | undefined,
+  ): Usage | undefined {
+    // Only a persisted pre-response snapshot (or zero for a fresh thread) is an
+    // authoritative baseline. Deriving one from `total - last` would silently
+    // lose earlier model requests when the first observed update was coalesced.
+    if (!this.#usageBaseline) {
+      this.#warnDegraded("baseline_missing");
+      return this.#usageFromLast(last);
+    }
+    if (!total || !this.#cumulativeUsageValid) return this.#usageFromLast(last);
+    const turn = subtractTokenUsage(total, this.#usageBaseline);
+    // A reset invalidates the old baseline for the rest of this response. Keep
+    // the newest total for the next response, but never resume subtraction
+    // merely because reset counters later grow beyond the stale snapshot.
+    if (!turn) {
+      this.#cumulativeUsageValid = false;
+      this.#warnDegraded("cumulative_reset");
+      return this.#usageFromLast(last);
+    }
+    return countersToUsage(turn);
+  }
+
+  /** Maps exact last-request counters and diagnoses malformed numeric values. */
+  #usageFromLast(last: Record<string, unknown>): Usage | undefined {
+    const usage = toUsage(last);
+    if (!usage) this.#warnDegraded("non_finite_counters");
+    return usage;
+  }
+
+  /** Emits each usage-attribution degradation reason at most once. */
+  #warnDegraded(reason: string): void {
+    if (!this.#diagnostics || this.#warnedReasons.has(reason)) return;
+    this.#warnedReasons.add(reason);
+    this.#diagnostics.log("warn", "usage_attribution_degraded", {
+      request_id: this.#diagnostics.requestId,
+      reason,
+    });
+  }
+
+  /** Emits an internal call, or a self-correlating call/result pair. */
+  #internalItem(
+    lifecycle: "started" | "completed",
+    item: Record<string, unknown>,
+  ): NormalizedEvent {
+    const id = String(item.id);
+    const existing = this.#toolCalls.get(id);
+    let call = existing;
+    if (!call) {
+      const shape = internalToolShape(item);
+      call = this.#allocateToolCall(id, shape.name, shape.arguments);
+    }
+    if (lifecycle === "started")
+      return existing ? {} : { delta: { tool_calls: [call] } };
+    return {
+      delta: {
+        // Streaming clients concatenate function arguments by call index, so a
+        // previously announced call must not repeat its complete arguments.
+        ...(!existing ? { tool_calls: [call] } : {}),
+        tool_results: [internalToolResult(item, call)],
+      },
+    };
+  }
+
+  /** Emits bounded progress as a self-correlating tool result. */
+  #internalProgress(
+    method: string,
+    params: Record<string, unknown>,
+  ): NormalizedEvent {
+    const id = String(params.itemId);
+    const existing = this.#toolCalls.get(id);
+    const call =
+      existing ??
+      this.#allocateToolCall(
+        id,
+        safeToolName(method.slice("item/".length)),
+        "{}",
+      );
+    return {
+      delta: {
+        // Orphan progress still introduces a reconstructable call, while later
+        // progress carries only the nonstandard self-correlating result.
+        ...(!existing ? { tool_calls: [call] } : {}),
+        tool_results: [progressToolResult(method, params, call)],
+      },
+    };
+  }
+
+  /** Allocates one monotonically increasing index for each call or item ID. */
+  #allocateToolCall(
+    id: string,
+    name: string,
+    argumentsJson: string,
+  ): NormalizedToolCall {
+    const existing = this.#toolCalls.get(id);
+    if (existing) return existing;
+    const call: NormalizedToolCall = {
+      index: this.#nextToolIndex++,
+      id,
+      type: "function",
+      function: { name: safeToolName(name), arguments: argumentsJson },
+    };
+    this.#toolCalls.set(id, call);
+    return call;
+  }
+}
+
+/** Normalizes one app-server terminal failure into a shared typed HTTP error. */
+function terminalEvent(
+  error: Record<string, unknown> | undefined,
+  fallbackMessage: string,
+): NormalizedEvent {
+  const message =
+    typeof error?.message === "string" ? error.message : fallbackMessage;
+  return {
+    terminalError:
+      usageLimitError(error, message) ??
+      serverOverloadedError(error, message) ??
+      appServerError(message),
+  };
+}
+
+/** Returns only the completed reasoning suffix not already streamed. */
+function reasoningRemainder(value: unknown, streamed: string): string {
+  if (!Array.isArray(value) || value.some((part) => typeof part !== "string"))
+    return "";
+  const completed = value.join("");
+  if (!streamed) return completed;
+  return completed.startsWith(streamed) ? completed.slice(streamed.length) : "";
+}
+
+/** Maps a pinned internal ThreadItem to a function-shaped call. */
+function internalToolShape(item: Record<string, unknown>): {
+  name: string;
+  arguments: string;
+} {
+  const kind = typeof item.type === "string" ? item.type : "unknown";
+  if (kind === "subAgentActivity")
+    return {
+      name: kind,
+      arguments: JSON.stringify(subAgentActivityContent(item)),
+    };
+  const details: Record<string, unknown> = {};
+  for (const key of [
+    "command",
+    "changes",
+    "server",
+    "tool",
+    "arguments",
+    "query",
+    "action",
+  ])
+    if (item[key] !== undefined) details[key] = item[key];
+  if (item.type === "collabAgentToolCall") {
+    if (typeof item.prompt === "string" || item.prompt === null)
+      details.prompt = item.prompt;
+    if (typeof item.model === "string" || item.model === null)
+      details.model = item.model;
+    if (
+      typeof item.reasoningEffort === "string" ||
+      item.reasoningEffort === null
+    )
+      details.reasoningEffort = item.reasoningEffort;
+    const receiverThreadIds = stringArray(item.receiverThreadIds);
+    if (receiverThreadIds !== undefined)
+      details.receiverThreadIds = receiverThreadIds;
+  }
+  return {
+    name: typeof item.tool === "string" ? item.tool : kind,
+    arguments: JSON.stringify(details),
+  };
+}
+
+/** Returns whether a web-search start contains stable request arguments. */
+function webSearchInputReady(item: Record<string, unknown>): boolean {
+  const query = typeof item.query === "string" ? item.query.trim() : "";
+  const action = record(item.action);
+  return query.length > 0 && action !== undefined && action.type !== "other";
+}
+
+/** Produces a valid function name from an app-server method or item kind. */
+function safeToolName(value: string): string {
+  const normalized = value.replaceAll(/[^a-zA-Z0-9_-]/g, "_").slice(0, 128);
+  return normalized || "unknown_tool";
+}
+
+/** Maps a terminal internal ThreadItem to a self-contained tool result. */
+function internalToolResult(
+  item: Record<string, unknown>,
+  call: NormalizedToolCall,
+): NormalizedToolResult {
+  const result =
+    item.type === "collabAgentToolCall"
+      ? collabAgentResultContent(item)
+      : item.type === "subAgentActivity"
+        ? subAgentActivityContent(item)
+        : item.type === "webSearch"
+          ? item.results
+          : (item.result ?? item.aggregatedOutput ?? item.action);
+  return {
+    id: String(item.id),
+    type: "function",
+    function: call.function,
+    result: {
+      status: typeof item.status === "string" ? item.status : "completed",
+      ...(result !== undefined ? { content: result } : {}),
+      ...(item.exitCode !== undefined ? { exit_code: item.exitCode } : {}),
+      ...(item.error !== undefined
+        ? { error: normalizeError(item.error) }
+        : {}),
+    },
+  };
+}
+
+/** Exposes child lifecycle correlation without publishing the agent path. */
+function subAgentActivityContent(
+  item: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...(typeof item.kind === "string" &&
+    ["started", "interacted", "interrupted", "completed"].includes(item.kind)
+      ? { kind: item.kind }
+      : {}),
+    ...(typeof item.agentThreadId === "string"
+      ? { agentThreadId: item.agentThreadId }
+      : {}),
+  };
+}
+
+/** Selects the documented child lifecycle fields from a collab result. */
+function collabAgentResultContent(
+  item: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const receiverThreadIds = stringArray(item.receiverThreadIds);
+  const agentsStates = normalizedAgentStates(
+    item.agentsStates,
+    new Set(receiverThreadIds ?? []),
+  );
+  if (receiverThreadIds === undefined && agentsStates === undefined)
+    return undefined;
+  return {
+    ...(receiverThreadIds !== undefined ? { receiverThreadIds } : {}),
+    ...(agentsStates !== undefined ? { agentsStates } : {}),
+  };
+}
+
+/** Retains only string entries from a protocol string-array field. */
+function stringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : undefined;
+}
+
+/** Retains only documented status/message fields from child-agent states. */
+function normalizedAgentStates(
+  value: unknown,
+  receiverThreadIds: ReadonlySet<string>,
+): Record<string, { status?: string; message?: string | null }> | undefined {
+  const states = record(value);
+  if (!states) return undefined;
+  return Object.fromEntries(
+    Object.entries(states).flatMap(([threadId, rawState]) => {
+      if (!receiverThreadIds.has(threadId)) return [];
+      const state = record(rawState);
+      if (!state) return [];
+      const normalized = {
+        ...(typeof state.status === "string" ? { status: state.status } : {}),
+        ...(typeof state.message === "string" || state.message === null
+          ? { message: state.message }
+          : {}),
+      };
+      return Object.keys(normalized).length > 0
+        ? ([[threadId, normalized]] as const)
+        : [];
+    }),
+  );
+}
+
+/** Maps correlated item deltas to an in-progress tool result. */
+function progressToolResult(
+  method: string,
+  params: Record<string, unknown>,
+  call: NormalizedToolCall,
+): NormalizedToolResult {
+  const subtype = method.slice("item/".length).split("/")[1] ?? "update";
+  const output = typeof params.delta === "string" ? params.delta : undefined;
+  const message =
+    typeof params.message === "string" ? params.message : undefined;
+  return {
+    id: String(params.itemId),
+    type: "function",
+    function: call.function,
+    result: {
+      status: "in_progress",
+      progress_type: subtype,
+      ...(typeof params.stream === "string" ? { stream: params.stream } : {}),
+      ...(output !== undefined ? { content: output } : {}),
+      ...(message !== undefined ? { message } : {}),
+      ...(params.patch !== undefined ? { patch: params.patch } : {}),
+    },
+  };
+}
+
+/** Reduces an app-server error to its documented structured public fields. */
+function normalizeError(value: unknown): NormalizedError {
+  const error = record(value);
+  if (!error) return { message: String(value) };
+  return {
+    ...(typeof error.message === "string" ? { message: error.message } : {}),
+    ...(typeof error.code === "string" ? { code: error.code } : {}),
+  };
+}
+
+/** Maps complete attributed counters to the standard usage object. */
+function countersToUsage(value: TokenUsageCounters): Usage {
+  return {
+    prompt_tokens: value.inputTokens,
+    completion_tokens: value.outputTokens,
+    total_tokens: value.totalTokens,
+    prompt_tokens_details: { cached_tokens: value.cachedInputTokens },
+    completion_tokens_details: {
+      reasoning_tokens: value.reasoningOutputTokens,
+    },
+  };
+}
+
+/**
+ * Maps exact app-server last-request usage to the standard usage object.
+ * Usage is optional output: incomplete counters omit it rather than failing a
+ * turn whose frames have already been committed.
+ */
+function toUsage(value: Record<string, unknown>): Usage | undefined {
+  const input = finite(value.inputTokens);
+  const output = finite(value.outputTokens);
+  const total = finite(value.totalTokens);
+  if (input === undefined || output === undefined || total === undefined)
+    return undefined;
+  const result: Usage = {
+    prompt_tokens: input,
+    completion_tokens: output,
+    total_tokens: total,
+  };
+  if (typeof value.cachedInputTokens === "number")
+    result.prompt_tokens_details = { cached_tokens: value.cachedInputTokens };
+  if (typeof value.reasoningOutputTokens === "number")
+    result.completion_tokens_details = {
+      reasoning_tokens: value.reasoningOutputTokens,
+    };
+  return result;
+}
+
+/** Records plain structural metadata once per unexposed method and transport. */
+export function diagnoseUnexposedNotification(
+  method: string,
+  params: unknown,
+  rpc: JsonRpcTransport,
+  log: Logger,
+): void {
+  let diagnosed = DIAGNOSED_NOTIFICATION_METHODS.get(rpc);
+  if (!diagnosed) {
+    diagnosed = new Set<string>();
+    DIAGNOSED_NOTIFICATION_METHODS.set(rpc, diagnosed);
+  }
+  if (diagnosed.has(method)) return;
+  if (diagnosed.size >= MAX_DIAGNOSTIC_METHODS) return;
+  diagnosed.add(method);
+  const value = record(params);
+  const keys = value ? Object.keys(value) : [];
+  log("debug", "unknown_app_server_event", {
+    method,
+    params_type: Array.isArray(params)
+      ? "array"
+      : params === null
+        ? "null"
+        : typeof params,
+    field_count: keys.length,
+    fields: keys,
+  });
+}
+
+/** Rejects notifications already established as belonging to another turn. */
+export function isEstablishedUnrelatedNotification(
+  value: unknown,
+  threadId: string | undefined,
+  turnId: string | undefined,
+): boolean {
+  const params = record(value);
+  if (!params) return false;
+  if (threadId && params.threadId !== threadId) return true;
+  return Boolean(turnId && notificationTurnId(params) !== turnId);
+}
+
+/** Returns a usage count only when app-server reported it exactly. */
+function finite(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
