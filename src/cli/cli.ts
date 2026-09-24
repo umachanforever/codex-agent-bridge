@@ -1,4 +1,5 @@
 import {
+  DEFAULT_BODY_LIMIT,
   DEFAULT_CODEX_HOME_DESCRIPTION,
   DEFAULT_STARTUP_TIMEOUT_MS,
   DEFAULT_STATE_DIR_DESCRIPTION,
@@ -54,7 +55,7 @@ Options:
                                 Resolve tool results by tool_call_id (default: true)
   --request-timeout <duration>  HTTP request deadline (default: 30s)
   --shutdown-timeout <duration> Graceful shutdown deadline (default: 10s)
-  --body-limit <bytes>          Maximum request body (default: 1048576)
+  --body-limit <bytes>          Maximum request body (default: ${DEFAULT_BODY_LIMIT})
   --max-requests <count>        Maximum concurrent requests; 0 disables the cap (default: 100)
   --local-bridge-model <model>  Enable local compatibility defaults and codex-cli alias
                                 Requires CODEX_BRIDGE_TOKEN or CODEX_BRIDGE_TOKEN_FILE

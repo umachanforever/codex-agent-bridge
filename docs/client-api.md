@@ -295,7 +295,7 @@ Bare CLI limits (all configurable via CLI flags; deployment profiles override th
 
 | Limit                            | Default                                     |
 | -------------------------------- | ------------------------------------------- |
-| JSON body size                   | 1 MiB                                       |
+| JSON body size                   | 32 MiB                                      |
 | Concurrent HTTP requests         | 100 (excess rejected with 429 `overloaded`) |
 | Request deadline                 | 30 s                                        |
 | Login / startup deadline (fixed) | 5 min                                       |
