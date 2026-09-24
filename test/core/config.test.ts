@@ -8,6 +8,7 @@ import {
   LOG_LEVELS,
   LOGIN_MODES,
   SYNC_AUTH_MODES,
+  DEFAULT_BODY_LIMIT,
   isInteractiveLogin,
   normalizeLoopbackHost,
   parseServeOptions,
@@ -73,6 +74,12 @@ test("local bridge profile supports 128 MiB bodies and explicitly unlimited conc
     () => parseServeOptions(["--local-bridge-model", " "]),
     /non-empty/,
   );
+});
+
+/** Keeps the native default aligned with the documented container limit. */
+test("default request body limit is 128 MiB", () => {
+  assert.equal(DEFAULT_BODY_LIMIT, 128 * 1024 * 1024);
+  assert.equal(parseServeOptions([]).bodyLimitBytes, DEFAULT_BODY_LIMIT);
 });
 
 test("local host tools require an explicit local profile opt-in", () => {

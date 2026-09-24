@@ -5,7 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { canonicalizeRoot, isPathWithinRoot } from "./policy.js";
 
 /** Default maximum accepted HTTP request-body size. */
-export const DEFAULT_BODY_LIMIT = 32 * 1024 * 1024;
+export const DEFAULT_BODY_LIMIT = 128 * 1024 * 1024;
 
 /**
  * Deadline for app-server spawn and, on first run, the interactive login.

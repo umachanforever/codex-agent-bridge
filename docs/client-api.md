@@ -113,7 +113,7 @@ acceptance of inline CSV, XLSX, and UTF-8 text files in the same part is an
 type (or `application/octet-stream`). Other UTF-8 files require a `text/*`,
 JSON, XML, JavaScript, or YAML MIME type. Each decoded file or audio clip is
 limited to 20 MiB. The proxy preserves content order when replaying message
-history. The default HTTP body limit is 32 MiB; larger combined requests need
+history. The default HTTP body limit is 128 MiB; larger combined requests need
 an explicit `--body-limit` setting.
 
 Audio is forwarded as an app-server data URL. Because app-server has
@@ -295,7 +295,7 @@ Bare CLI limits (all configurable via CLI flags; deployment profiles override th
 
 | Limit                            | Default                                     |
 | -------------------------------- | ------------------------------------------- |
-| JSON body size                   | 32 MiB                                      |
+| JSON body size                   | 128 MiB                                     |
 | Concurrent HTTP requests         | 100 (excess rejected with 429 `overloaded`) |
 | Request deadline                 | 30 s                                        |
 | Login / startup deadline (fixed) | 5 min                                       |
