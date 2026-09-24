@@ -484,7 +484,9 @@ test("inline PDF becomes ordered page text and images in replay history", async 
     { type: "text", text: "summarize" },
     { type: "file", filename: "sample.pdf", data: file_data },
   ]);
-  await materializePdfParts([message], AbortSignal.timeout(5000));
+  // First use loads PDF.js and a native Canvas binary; Windows CI cold starts
+  // can exceed Vitest's five-second default before the small page is rendered.
+  await materializePdfParts([message], AbortSignal.timeout(45_000));
   assert.equal(message.contentParts?.[0]?.type, "text");
   assert.match(
     message.contentParts?.[1]?.type === "text"
@@ -504,7 +506,7 @@ test("inline PDF becomes ordered page text and images in replay history", async 
   assert.equal(history.content[0]?.text, "summarize");
   assert.match(String(history.content[1]?.text), /Synthetic PDF/);
   assert.equal(history.content[2]?.type, "input_image");
-});
+}, 60_000);
 
 test("inline CSV and XLSX become ordered model-visible table text", async () => {
   const csv = Buffer.from("name,value\nexample,42\n").toString("base64");
