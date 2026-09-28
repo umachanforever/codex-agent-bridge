@@ -21,6 +21,7 @@ Install from this repository with Node.js or Docker Compose. The deployment comm
 
 - Text conversations, SSE streaming, client function tools, and continuation with tool results.
 - Text-part arrays and harmless unknown history metadata; known fields and execution policies are still validated.
+- Client token-cap parameters are accepted for compatibility but do not limit output or model cost.
 - Reuse of local Codex authentication by default, with a separate writable Codex home for the proxy. Independent login is optional.
 - Web management for status, usage, API keys, runtime settings, and theme selection.
 - A manual price table and an optional model-assisted lookup of current official prices. Suggested changes require review and confirmation before saving.

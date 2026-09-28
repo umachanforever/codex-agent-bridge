@@ -7,6 +7,7 @@ import {
 } from "../../src/http/chat-validate.js";
 import { materializePdfParts } from "../../src/http/pdf-input.js";
 import { silentLogger } from "../support/logger.js";
+import { createLogger } from "../../src/core/logger.js";
 import { HttpError } from "../../src/http/errors.js";
 import { syntheticPdf } from "../support/pdf.js";
 import { zipSync } from "fflate";
@@ -303,8 +304,6 @@ test("legacy function protocol and unimplemented cardinality controls fail expli
     { function_call: "auto" },
     { parallel_tool_calls: false },
     { n: 2 },
-    { max_tokens: 8 },
-    { max_completion_tokens: 8 },
   ])
     assert.throws(
       () => parse([{ role: "user", content: "synthetic" }], extra),
@@ -329,14 +328,85 @@ test("bare CLI rejects controls that cannot be honored before a model turn", () 
     { function_call: "auto" },
     { parallel_tool_calls: false },
     { n: 2 },
-    { max_tokens: 8 },
-    { max_completion_tokens: 8 },
   ])
     assert.throws(
       () => validateRequest({ ...body, ...extra }, silentLogger, "test", true),
       (error: unknown) =>
         error instanceof HttpError && error.code === "unsupported_parameter",
     );
+});
+
+/** Accepts client probe token caps without promising an unavailable limit. */
+test("token caps are validated and ignored with one explicit warning in every profile", () => {
+  const body = {
+    model: "synthetic",
+    messages: [{ role: "user", content: "Reply with OK." }],
+    stream: true,
+  };
+  for (const profile of ["bare", "local", "agent"]) {
+    const adapt = (extra: Record<string, unknown>) =>
+      adaptLocalBridgeRequest(
+        { ...body, ...extra },
+        profile === "bare" ? undefined : "synthetic",
+        profile === "agent",
+      );
+    for (const field of ["max_tokens", "max_completion_tokens"]) {
+      const warnings: unknown[] = [];
+      const parsed = validateRequest(
+        adapt({ [field]: 16, temperature: 0 }),
+        createLogger("warn", (entry) => {
+          const warning = { ...entry };
+          delete warning.time;
+          warnings.push(warning);
+        }),
+        "synthetic-probe",
+        true,
+      );
+      assert.equal(parsed.stream, true);
+      assert.equal(parsed.generation, undefined);
+      assert.deepEqual(warnings, [
+        {
+          level: "warn",
+          event: "unsupported_chat_fields_ignored",
+          request_id: "synthetic-probe",
+          fields: [field, "temperature"].sort(),
+          output_token_limit_enforced: false,
+        },
+      ]);
+      for (const value of [
+        0,
+        -1,
+        1.5,
+        "16",
+        true,
+        {},
+        Number.MAX_SAFE_INTEGER + 1,
+      ])
+        assert.throws(
+          () =>
+            validateRequest(
+              adapt({ [field]: value }),
+              silentLogger,
+              "test",
+              true,
+            ),
+          (error: unknown) =>
+            error instanceof HttpError &&
+            error.status === 400 &&
+            error.param === field,
+        );
+    }
+    assert.throws(
+      () =>
+        validateRequest(
+          adapt({ max_tokens: 16, max_completion_tokens: 16 }),
+          silentLogger,
+          "test",
+          true,
+        ),
+      /Use only one/,
+    );
+  }
 });
 
 test("text part arrays preserve order, whitespace, escapes and every message role", () => {

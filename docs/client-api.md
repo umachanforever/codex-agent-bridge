@@ -99,7 +99,7 @@ curl http://127.0.0.1:8787/v1/models
 
 Model retrieval, deletion, and mutation endpoints are not supported.
 
-Harmless unsupported fields are ignored with one structured warning. Malformed or ambiguous input is rejected rather than approximated. The proxy rejects `max_tokens` and `max_completion_tokens` because it cannot enforce an output token cap. It also rejects `n` other than `1`, `parallel_tool_calls: false`, and the legacy `functions` and `function_call` controls in every deployment profile.
+Harmless unsupported fields are ignored with one structured warning. Malformed or ambiguous input is rejected rather than approximated. For client compatibility, `max_tokens` or `max_completion_tokens` accepts a positive safe integer and is ignored: app-server cannot enforce an output token cap. The warning explicitly records `output_token_limit_enforced: false`; these fields do not bound output or model cost. Supplying both fields is rejected. The proxy rejects `n` other than `1`, `parallel_tool_calls: false`, and the legacy `functions` and `function_call` controls in every deployment profile.
 
 User messages may contain an ordered array of `text`, `image_url`, `input_audio`,
 and `file` parts. An

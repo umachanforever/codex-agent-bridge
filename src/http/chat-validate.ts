@@ -150,15 +150,22 @@ export function validateRequest(
     invalid("messages must be a non-empty array.", "messages");
   if (body.stream !== undefined && typeof body.stream !== "boolean")
     invalid("stream must be a boolean.", "stream");
-  // These controls change the number or shape of model responses. Ignoring
-  // them would claim a limit or tool behavior that app-server cannot honor.
-  for (const field of [
-    "functions",
-    "function_call",
-    "max_tokens",
-    "max_completion_tokens",
-  ])
+  // Legacy function controls cannot be mapped to the client-tool protocol.
+  for (const field of ["functions", "function_call"])
     if (body[field] != null) unsupported(field);
+  // Client connection probes commonly include a token cap. Accept valid caps
+  // for compatibility, but never imply that app-server enforces that limit.
+  const tokenCaps = ["max_tokens", "max_completion_tokens"].filter(
+    (field) => body[field] != null,
+  );
+  for (const field of tokenCaps)
+    if (!Number.isSafeInteger(body[field]) || (body[field] as number) <= 0)
+      invalid(`${field} must be a positive safe integer.`, field);
+  if (tokenCaps.length > 1)
+    invalid(
+      "Use only one of max_tokens or max_completion_tokens.",
+      "max_completion_tokens",
+    );
   if (body.n != null && body.n !== 1) unsupported("n");
   if (body.parallel_tool_calls != null && body.parallel_tool_calls !== true)
     unsupported("parallel_tool_calls");
@@ -243,6 +250,7 @@ export function validateRequest(
     log("warn", "unsupported_chat_fields_ignored", {
       request_id: requestId,
       fields: ignored.sort(),
+      ...(tokenCaps.length ? { output_token_limit_enforced: false } : {}),
     });
   return {
     model: body.model as string,

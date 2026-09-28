@@ -9,6 +9,10 @@ The proxy targets one app-server contract at a time. The current runtime depende
 | Codex home and authentication             | A proxy-owned Codex home is shared across roots; only `auth.json` is synchronized from the ordinary Codex home.                                        | Review on-disk cache/config formats and token handling before reusing that home with a new pin.                                                                           |
 | Continuation state                        | Each root has a separate durable response store with schema version 0.                                                                                 | Review the persisted record format and restart behavior; migrate an incompatible format explicitly or reject it without rewriting it.                                     |
 
+## Client token caps
+
+WorkBuddy connection probes include `max_tokens`. The proxy accepts a positive safe integer in either `max_tokens` or `max_completion_tokens` across all profiles, records one ignored-field warning with `output_token_limit_enforced: false`, and omits the cap from app-server calls. Malformed values and requests supplying both fields fail before model work. This allows probes and client requests to proceed, but app-server has no output-token-limit control, so clients cannot use these fields to bound output or cost. See the [client API](client-api.md#use-an-openai-client).
+
 ## Temporary model catalog override
 
 Codex 0.155.1 can route models marked `use_responses_lite` through code mode, turning declared client functions into nested callbacks. The proxy clones `models_cache.json` into `models.no-responses-lite.json`, sets `use_responses_lite` to `false` for every model, and removes `tool_mode` from entries that originally used Responses Lite. The pinned model metadata no longer contains `supports_parallel_tool_calls`, so the conversion cannot depend on that former field. The source cache remains Codex-owned and unchanged by this transformation.

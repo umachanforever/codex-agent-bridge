@@ -23,6 +23,7 @@ Codex Agent Bridge 通过兼容 OpenAI Chat Completions 的接口，将本地的
 - 文本分段数组与无害的未知历史元数据；已知字段与执行策略仍会被校验。
 - 默认复用本地 Codex 鉴权，并为代理分配独立可写的 Codex home；也可选择独立登录。
 - Web 管理台支持查看状态、用量、API Key、运行时设置与主题切换。
+- 兼容接收客户端的 token 上限参数，但不限制输出量或模型费用。
 - 内置手动价格表，并支持可选的"模型辅助查询当前官方价格"。建议的变更需经复核确认后方可保存。
 - 实测 token 用量，并按公开 API 价格估算标准短上下文成本——这既不是账单，也不是账户余额。
 - 提供 Chat Completions 的子集，支持用户消息中的内联图片、音频、PDF、文本、CSV 和 XLSX 输入。非 PDF 的文件内容块是 `x_codex` 扩展，会在本地转换为文本。Responses API、音频输出、已上传文件 ID 及部分 OpenAI 参数暂不支持，详见[客户端 API](docs/client-api.md)与[兼容性说明](docs/compatibility.md)。
