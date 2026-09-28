@@ -4,8 +4,8 @@ import { HttpError } from "./errors.js";
 /** Native generation settings included in continuation identity. */
 export interface GenerationOptions {
   outputSchema?: Record<string, unknown>;
-  verbosity?: "low" | "medium" | "high";
-  serviceTier?: "default" | "priority";
+  verbosity?: string;
+  serviceTier?: string;
 }
 
 /** Rejects a malformed generation control before any model work starts. */
@@ -22,20 +22,19 @@ function invalid(message: string, param: string): never {
 /** Maps structured output directly to the pinned app-server schema capability. */
 export function generationOptions(
   body: Record<string, unknown>,
+  ignored: string[],
 ): GenerationOptions | undefined {
   const result: GenerationOptions = {};
   if (body.response_format != null) {
     const format = record(body.response_format);
     if (!format)
       invalid("response_format must be an object.", "response_format");
-    if (format.type === "json_object")
-      throw new HttpError(
-        400,
-        "response_format json_object is not supported on this bridge; use json_schema with an explicit object schema.",
-        "invalid_request_error",
-        "unsupported_parameter",
+    if (typeof format.type !== "string" || !format.type.trim())
+      invalid(
+        "response_format.type must be a non-empty string.",
         "response_format.type",
       );
+    if (format.type === "json_object") result.outputSchema = { type: "object" };
     else if (format.type === "json_schema") {
       const definition = record(format.json_schema);
       const schema = record(definition?.schema);
@@ -53,27 +52,18 @@ export function generationOptions(
           "response_format.json_schema.strict",
         );
       result.outputSchema = schema;
-    } else if (format.type !== "text")
-      invalid("Unsupported response_format type.", "response_format.type");
+    } else if (format.type !== "text") ignored.push("response_format");
   }
   if (body.verbosity != null) {
-    if (
-      body.verbosity !== "low" &&
-      body.verbosity !== "medium" &&
-      body.verbosity !== "high"
-    )
-      invalid("verbosity must be low, medium or high.", "verbosity");
+    if (typeof body.verbosity !== "string" || !body.verbosity.trim())
+      invalid("verbosity must be a non-empty string.", "verbosity");
     result.verbosity = body.verbosity;
   }
   if (body.service_tier != null && body.service_tier !== "auto") {
-    if (body.service_tier === "default") result.serviceTier = "default";
-    else if (body.service_tier === "priority" || body.service_tier === "fast")
-      result.serviceTier = "priority";
-    else
-      invalid(
-        "service_tier supports auto, default, priority or fast.",
-        "service_tier",
-      );
+    if (typeof body.service_tier !== "string" || !body.service_tier.trim())
+      invalid("service_tier must be a non-empty string.", "service_tier");
+    result.serviceTier =
+      body.service_tier === "fast" ? "priority" : body.service_tier;
   }
   return Object.keys(result).length ? result : undefined;
 }

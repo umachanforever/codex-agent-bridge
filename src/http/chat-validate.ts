@@ -13,27 +13,8 @@ import {
   type GenerationOptions,
 } from "./generation-options.js";
 
-/** Chat Completions reasoning-effort values supported by the public API. */
-const REASONING_EFFORTS = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
-
-/** A validated Chat Completions reasoning-effort value. */
-export type ChatReasoningEffort = (typeof REASONING_EFFORTS)[number];
-
-/** Narrows an unknown value to one supported reasoning effort. */
-function isReasoningEffort(value: unknown): value is ChatReasoningEffort {
-  return (
-    typeof value === "string" &&
-    (REASONING_EFFORTS as readonly string[]).includes(value)
-  );
-}
+/** Native reasoning-effort names are interpreted by app-server, not a proxy enum. */
+export type ChatReasoningEffort = string;
 
 /**
  * Response-only reasoning field names accepted on a replayed assistant message.
@@ -150,9 +131,7 @@ export function validateRequest(
     invalid("messages must be a non-empty array.", "messages");
   if (body.stream !== undefined && typeof body.stream !== "boolean")
     invalid("stream must be a boolean.", "stream");
-  // Legacy function controls cannot be mapped to the client-tool protocol.
-  for (const field of ["functions", "function_call"])
-    if (body[field] != null) unsupported(field);
+  const ignoredControls: string[] = [];
   // Client connection probes commonly include a token cap. Accept valid caps
   // for compatibility, but never imply that app-server enforces that limit.
   const tokenCaps = ["max_tokens", "max_completion_tokens"].filter(
@@ -161,20 +140,22 @@ export function validateRequest(
   for (const field of tokenCaps)
     if (!Number.isSafeInteger(body[field]) || (body[field] as number) <= 0)
       invalid(`${field} must be a positive safe integer.`, field);
-  if (tokenCaps.length > 1)
-    invalid(
-      "Use only one of max_tokens or max_completion_tokens.",
-      "max_completion_tokens",
-    );
-  if (body.n != null && body.n !== 1) unsupported("n");
-  if (body.parallel_tool_calls != null && body.parallel_tool_calls !== true)
-    unsupported("parallel_tool_calls");
+  if (
+    body.n != null &&
+    (!Number.isSafeInteger(body.n) || (body.n as number) <= 0)
+  )
+    invalid("n must be a positive safe integer.", "n");
+  if (
+    body.parallel_tool_calls != null &&
+    typeof body.parallel_tool_calls !== "boolean"
+  )
+    invalid("parallel_tool_calls must be a boolean.", "parallel_tool_calls");
   const rawReasoningEffort = body.reasoning_effort;
   let reasoningEffort: ChatReasoningEffort | undefined;
   if (rawReasoningEffort !== undefined && rawReasoningEffort !== null) {
-    if (!isReasoningEffort(rawReasoningEffort))
+    if (typeof rawReasoningEffort !== "string" || !rawReasoningEffort.trim())
       invalid(
-        `reasoning_effort must be one of ${REASONING_EFFORTS.join(", ")}.`,
+        "reasoning_effort must be a non-empty string.",
         "reasoning_effort",
       );
     reasoningEffort = rawReasoningEffort;
@@ -219,18 +200,49 @@ export function validateRequest(
     const streamOptions = record(body.stream_options);
     if (
       !streamOptions ||
-      Object.keys(streamOptions).some((key) => key !== "include_usage") ||
       (streamOptions.include_usage !== undefined &&
         typeof streamOptions.include_usage !== "boolean")
     )
       invalid(
-        "stream_options supports only a boolean include_usage field.",
+        "stream_options must be an object with an optional boolean include_usage field.",
         "stream_options",
       );
     includeUsage = streamOptions.include_usage !== false;
+    ignoredControls.push(
+      ...Object.keys(streamOptions)
+        .filter((key) => key !== "include_usage")
+        .map((key) => `stream_options.${key}`),
+    );
   }
-  const dynamicTools = validateTools(body.tools, body.tool_choice);
-  const generation = generationOptions(body);
+  // Legacy declarations have the same function schema, so convert them rather
+  // than dropping tools. Conflicting declaration/selector sources are ambiguous.
+  let tools = body.tools;
+  if (body.functions != null) {
+    if (tools != null)
+      invalid("Use only one of tools or functions.", "functions");
+    if (!Array.isArray(body.functions))
+      invalid("functions must be an array.", "functions");
+    tools = body.functions.map((fn) => ({ type: "function", function: fn }));
+  }
+  if (body.tool_choice != null && body.function_call != null)
+    invalid("Use only one of tool_choice or function_call.", "function_call");
+  const choiceField =
+    body.tool_choice != null ? "tool_choice" : "function_call";
+  let choice = body.tool_choice ?? body.function_call;
+  const legacyChoice = record(choice);
+  if (
+    choiceField === "function_call" &&
+    legacyChoice &&
+    typeof legacyChoice.name === "string"
+  )
+    choice = { type: "function", function: { name: legacyChoice.name } };
+  const dynamicTools = validateTools(
+    tools,
+    choice,
+    choiceField,
+    ignoredControls,
+  );
+  const generation = generationOptions(body, ignoredControls);
   const supported = new Set([
     "model",
     "reasoning_effort",
@@ -239,13 +251,20 @@ export function validateRequest(
     "stream_options",
     "tools",
     "tool_choice",
+    "functions",
+    "function_call",
     "previous_response_id",
     "x_codex",
     "response_format",
     "verbosity",
     "service_tier",
   ]);
-  const ignored = Object.keys(body).filter((key) => !supported.has(key));
+  const ignored = [
+    ...new Set([
+      ...Object.keys(body).filter((key) => !supported.has(key)),
+      ...ignoredControls,
+    ]),
+  ];
   if (ignored.length)
     log("warn", "unsupported_chat_fields_ignored", {
       request_id: requestId,
@@ -560,37 +579,60 @@ function validateMessage(value: unknown, index: number): ChatMessage {
 function validateTools(
   value: unknown,
   choice: unknown,
+  choiceField: string,
+  ignored: string[],
 ): Array<Record<string, unknown>> {
-  if (choice !== undefined && choice !== "auto" && choice !== "none")
-    invalid(
-      "tool_choice supports only auto or none in this stage.",
-      "tool_choice",
-    );
-  if (value === undefined || choice === "none") return [];
-  if (!Array.isArray(value)) invalid("tools must be an array.", "tools");
-  return value.map((raw, index) => {
-    const tool = record(raw);
-    const fn = record(tool?.function);
+  if (choice != null && choice !== "auto" && choice !== "none") {
+    const selector = record(choice);
     if (
-      tool?.type !== "function" ||
-      !fn ||
-      typeof fn.name !== "string" ||
-      fn.name === "" ||
-      fn.name.length > 128 ||
-      !/^[a-zA-Z0-9_-]+$/.test(fn.name) ||
-      !record(fn.parameters)
+      !(typeof choice === "string" && choice.trim()) &&
+      !(typeof selector?.type === "string" && selector.type.trim())
     )
       invalid(
-        "Each tool must be a named function with a JSON Schema parameters object.",
-        `tools.${index}`,
+        "Tool selection must be a non-empty string or a typed object.",
+        choiceField,
       );
-    return {
-      type: "function",
-      name: fn.name,
-      description: typeof fn.description === "string" ? fn.description : "",
-      inputSchema: fn.parameters,
-    };
-  });
+    if (
+      selector?.type === "function" &&
+      (typeof record(selector.function)?.name !== "string" ||
+        !(record(selector.function)?.name as string).trim())
+    )
+      invalid("A function selector requires a non-empty name.", choiceField);
+    // app-server exposes dynamic tools but has no forced-call selector. Keep
+    // automatic selection and report that this client control is not enforced.
+    ignored.push(choiceField);
+  }
+  if (value == null) return [];
+  if (!Array.isArray(value)) invalid("tools must be an array.", "tools");
+  return value
+    .map((raw, index) => {
+      const tool = record(raw);
+      const fn = record(tool?.function);
+      if (
+        tool?.type !== "function" ||
+        !fn ||
+        typeof fn.name !== "string" ||
+        fn.name === "" ||
+        fn.name.length > 128 ||
+        !/^[a-zA-Z0-9_-]+$/.test(fn.name) ||
+        (fn.parameters !== undefined && !record(fn.parameters))
+      )
+        invalid(
+          "Each tool must be a named function with a JSON Schema parameters object.",
+          `tools.${index}`,
+        );
+      return {
+        type: "function",
+        name: fn.name,
+        description: typeof fn.description === "string" ? fn.description : "",
+        inputSchema: fn.parameters ?? {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      };
+    })
+    .filter(() => choice !== "none");
 }
 
 /** Joins Chat Completions system messages for app-server base instructions. */
@@ -818,17 +860,6 @@ function invalid(message: string, param: string | null): never {
     message,
     "invalid_request_error",
     "invalid_request",
-    param,
-  );
-}
-
-/** Rejects a known Chat Completions control this proxy cannot honor. */
-function unsupported(param: string): never {
-  throw new HttpError(
-    400,
-    `${param} is not supported by this proxy.`,
-    "invalid_request_error",
-    "unsupported_parameter",
     param,
   );
 }

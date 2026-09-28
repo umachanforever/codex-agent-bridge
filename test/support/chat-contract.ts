@@ -1481,7 +1481,7 @@ export function registerChatContract(
           },
           {
             model: model,
-            reasoning_effort: "unsupported",
+            reasoning_effort: 1,
             messages: [{ role: "user", content: "x" }],
           },
         ]) {

@@ -248,13 +248,15 @@ test("contract documents the implemented Stage 05 compatibility mappings", async
   const ignoredFields = [...ignoredRow.matchAll(/`([^`]+)`/g)].map(
     (match) => match[1],
   );
-  assert(ignoredFields.length > 20, "ignored fields were not enumerated");
+  for (const field of ["temperature", "top_p", "stop", "seed", "metadata"])
+    assert(ignoredFields.includes(field), `missing ignored field: ${field}`);
   assert.match(
     contract,
     /Any other unknown top-level field.*Ignored with warning/,
   );
   assert.match(contract, /`unsupported_chat_fields_ignored`/);
-  assert.match(contract, /`none` is accepted/);
+  assert.match(contract, /`none` omits/);
+  assert.match(contract, /`output_token_limit_enforced: false`/);
   assert.match(contract, /`choices\[0\]\.delta\.reasoning`/);
   assert.match(contract, /`reasoning_effort`.*`turn\/start\.effort`/);
   assert.match(

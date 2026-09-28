@@ -21,12 +21,12 @@ Install from this repository with Node.js or Docker Compose. The deployment comm
 
 - Text conversations, SSE streaming, client function tools, and continuation with tool results.
 - Text-part arrays and harmless unknown history metadata; known fields and execution policies are still validated.
-- Client token-cap parameters are accepted for compatibility but do not limit output or model cost.
+- Client parameters are accepted by default: native settings are forwarded, and unmapped controls are ignored with a warning. Token caps do not limit output or model cost.
 - Reuse of local Codex authentication by default, with a separate writable Codex home for the proxy. Independent login is optional.
 - Web management for status, usage, API keys, runtime settings, and theme selection.
 - A manual price table and an optional model-assisted lookup of current official prices. Suggested changes require review and confirmation before saving.
 - Measured token usage and an estimated standard short-context cost based on public API prices. This is neither a bill nor an account balance.
-- A Chat Completions subset with inline user image, audio, PDF, text, CSV, and XLSX input. Non-PDF file parts are an `x_codex` extension converted locally to text. The Responses API, audio output, uploaded file IDs, and some OpenAI parameters are unsupported. See the [client API](docs/client-api.md) and [compatibility notes](docs/compatibility.md).
+- A Chat Completions subset with inline user image, audio, PDF, text, CSV, and XLSX input. Non-PDF file parts are an `x_codex` extension converted locally to text. The Responses API, audio output, and uploaded file IDs are unsupported. See the [client API](docs/client-api.md) and [compatibility notes](docs/compatibility.md).
 
 The client executes tools it declares, such as WorkBuddy's local file operations. Codex built-in tools run where the proxy runs. Full access inside Docker does not grant host access. The default service profile disables built-in tools and does not mount the host workspace or Docker socket.
 

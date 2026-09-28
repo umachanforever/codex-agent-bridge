@@ -152,7 +152,9 @@ export function adaptLocalBridgeRequest(
   const extension = record(body.x_codex);
   // Leave malformed extensions intact for the normal validator to reject.
   if (body.x_codex !== undefined && !extension) return value;
-  const clientTools = Array.isArray(body.tools) && body.tools.length > 0;
+  const clientTools =
+    (Array.isArray(body.tools) && body.tools.length > 0) ||
+    (Array.isArray(body.functions) && body.functions.length > 0);
   return {
     ...body,
     ...(Array.isArray(body.messages)
@@ -160,15 +162,6 @@ export function adaptLocalBridgeRequest(
       : {}),
     ...(Array.isArray(body.tools)
       ? { tools: body.tools.map(normalizeTool) }
-      : {}),
-    ...(record(body.stream_options)
-      ? {
-          stream_options: Object.fromEntries(
-            Object.entries(record(body.stream_options)!).filter(
-              ([key]) => key === "include_usage",
-            ),
-          ),
-        }
       : {}),
     model:
       body.model === undefined || body.model === "codex-cli"

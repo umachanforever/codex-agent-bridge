@@ -1,4 +1,4 @@
-import type { JsonRpcTransport } from "../app-server/json-rpc.js";
+import { RpcError, type JsonRpcTransport } from "../app-server/json-rpc.js";
 import { IngressQueue, type IngressEvent } from "../sessions/ingress.js";
 import { matchesTurn } from "../sessions/correlation.js";
 import type { ThreadConfigResolver } from "../app-server/windows-sandbox.js";
@@ -331,6 +331,15 @@ export async function execute(
     // Setup failures occur before HTTP headers, but still must release any
     // ownership acquired by an earlier setup step.
     await cleanup();
+    // Native parameter validation belongs to app-server. Preserve that origin
+    // in a public error without exposing its potentially sensitive message.
+    if (error instanceof RpcError && error.rpcCode === -32602)
+      throw new HttpError(
+        400,
+        "App-server rejected the supplied native parameters.",
+        "invalid_request_error",
+        "app_server_invalid_parameters",
+      );
     throw error;
   }
   // Constructed only once the attribution boundary is known, so no notification

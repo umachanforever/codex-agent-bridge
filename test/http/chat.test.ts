@@ -2946,6 +2946,110 @@ test("reasoning effort none disables app-server reasoning summaries", async () =
   });
 });
 
+/** Leaves native setting names to app-server while keeping protocol controls local. */
+test("native settings reach app-server and unmapped controls do not block the request", async () => {
+  await withChatServer(async (origin, _proxy, useTransport) => {
+    const fake = policyCapturingAppServer();
+    useTransport(fake);
+    const response = await fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "m",
+        messages: [{ role: "user", content: "synthetic" }],
+        reasoning_effort: "future_effort",
+        service_tier: "future_tier",
+        verbosity: "future_verbosity",
+        n: 3,
+        parallel_tool_calls: false,
+        tool_choice: "required",
+        max_tokens: 8,
+        max_completion_tokens: 16,
+        stream_options: { include_obfuscation: true },
+        x_codex: { sandbox: "read-only" },
+      }),
+    });
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+    const start = fake.messages.find(
+      (message) => message.method === "thread/start",
+    )?.params as Record<string, unknown>;
+    const turn = fake.messages.find(
+      (message) => message.method === "turn/start",
+    )?.params as Record<string, unknown>;
+    assert.equal(
+      (start.config as Record<string, unknown>).model_verbosity,
+      "future_verbosity",
+    );
+    assert.equal(turn.effort, "future_effort");
+    assert.equal(turn.serviceTierForTurn, "future_tier");
+    for (const field of [
+      "max_tokens",
+      "max_completion_tokens",
+      "n",
+      "tool_choice",
+      "parallel_tool_calls",
+    ])
+      assert.equal(turn[field], undefined);
+    assert.deepEqual(turn.sandboxPolicy, {
+      type: "readOnly",
+      networkAccess: false,
+    });
+  });
+});
+
+/** Confirms native validation errors occur after forwarding rather than in a proxy enum. */
+test("app-server rejects an unknown native setting after receiving it", async () => {
+  await withChatServer(async (origin, _proxy, useTransport) => {
+    let receivedEffort: unknown;
+    const fake = createFakeTransport({
+      onMessage(message, send) {
+        if (message.method === "thread/start")
+          send(
+            protocolResponse(
+              "thread/start",
+              message.id as number,
+              protocolThreadStartResponse(
+                protocolThread("thr_native_validation"),
+              ),
+            ),
+          );
+        else if (message.method === "thread/inject_items")
+          send(
+            protocolResponse("thread/inject_items", message.id as number, {}),
+          );
+        else if (message.method === "turn/start") {
+          receivedEffort = (message.params as Record<string, unknown>).effort;
+          send({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: {
+              code: -32602,
+              message: "Synthetic unsupported native effort.",
+            },
+          });
+        }
+      },
+    });
+    useTransport(fake);
+    const response = await fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "m",
+        reasoning_effort: "future_effort",
+        messages: [{ role: "user", content: "synthetic" }],
+      }),
+    });
+    assert.equal(receivedEffort, "future_effort");
+    assert.equal(response.status, 400);
+    assert.equal(
+      ((await response.json()) as { error: { code: string } }).error.code,
+      "app_server_invalid_parameters",
+    );
+  });
+});
+
 test("app-server reasoning summaries default to detailed", async () => {
   await withChatServer(async (origin, _proxy, useTransport) => {
     const fake = policyCapturingAppServer();
@@ -3573,7 +3677,7 @@ test("rejects ambiguous history and executes an unknown continuation on a fresh 
       },
       {
         model: "m",
-        reasoning_effort: "ultra",
+        reasoning_effort: " ",
         messages: [{ role: "user", content: "x" }],
       },
       {

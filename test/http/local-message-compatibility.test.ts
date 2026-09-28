@@ -239,12 +239,10 @@ test("response formats become native schemas instead of ignored prompt hints", (
     }).generation?.outputSchema,
     schema,
   );
-  assert.throws(
-    () => parse(messages, { response_format: { type: "json_object" } }),
-    (error: unknown) =>
-      error instanceof HttpError &&
-      error.code === "unsupported_parameter" &&
-      /json_schema/.test(error.message),
+  assert.deepEqual(
+    parse(messages, { response_format: { type: "json_object" } }).generation
+      ?.outputSchema,
+    { type: "object" },
   );
   assert.equal(
     parse(messages, { response_format: { type: "text" } }).generation,
@@ -257,13 +255,13 @@ test("response formats become native schemas instead of ignored prompt hints", (
       }),
     /schema/,
   );
-  assert.throws(
-    () => parse(messages, { response_format: { type: "unknown" } }),
-    /response_format/,
+  assert.equal(
+    parse(messages, { response_format: { type: "unknown" } }).generation,
+    undefined,
   );
 });
 
-test("verbosity and service tiers have explicit native mappings and reject unknown values", () => {
+test("verbosity and service tiers delegate unknown names to app-server", () => {
   const messages = [{ role: "user", content: "synthetic" }];
   assert.deepEqual(
     parse(messages, { verbosity: "high", service_tier: "fast" }).generation,
@@ -276,11 +274,13 @@ test("verbosity and service tiers have explicit native mappings and reject unkno
     parse(messages, { service_tier: "auto", verbosity: null }).generation,
     undefined,
   );
-  assert.throws(
-    () => parse(messages, { service_tier: "flex" }),
-    /service_tier/,
+  assert.deepEqual(
+    parse(messages, { service_tier: "flex", verbosity: "future_verbosity" })
+      .generation,
+    { serviceTier: "flex", verbosity: "future_verbosity" },
   );
-  assert.throws(() => parse(messages, { verbosity: "invalid" }), /verbosity/);
+  assert.throws(() => parse(messages, { verbosity: 1 }), /verbosity/);
+  assert.throws(() => parse(messages, { service_tier: {} }), /service_tier/);
 });
 
 test("input_text parts use the same lossless text conversion as text parts", () => {
@@ -298,42 +298,100 @@ test("input_text parts use the same lossless text conversion as text parts", () 
   );
 });
 
-test("legacy function protocol and unimplemented cardinality controls fail explicitly", () => {
-  for (const extra of [
-    { functions: [] },
-    { function_call: "auto" },
-    { parallel_tool_calls: false },
-    { n: 2 },
-  ])
-    assert.throws(
-      () => parse([{ role: "user", content: "synthetic" }], extra),
-      (error: unknown) =>
-        error instanceof HttpError && error.code === "unsupported_parameter",
-    );
-  assert.doesNotThrow(() =>
-    parse([{ role: "user", content: "synthetic" }], {
-      parallel_tool_calls: true,
-      n: 1,
-    }),
-  );
-});
-
-test("bare CLI rejects controls that cannot be honored before a model turn", () => {
+/** Checks the common compatibility behavior before native policy resolution. */
+test("unmapped controls are accepted with one warning in every profile", () => {
   const body = {
     model: "synthetic",
     messages: [{ role: "user", content: "synthetic" }],
   };
+  for (const profile of ["bare", "local", "agent"]) {
+    const entries: Record<string, unknown>[] = [];
+    const parsed = validateRequest(
+      adaptLocalBridgeRequest(
+        {
+          ...body,
+          n: 3,
+          parallel_tool_calls: false,
+          tool_choice: "required",
+          stream_options: { include_usage: false, include_obfuscation: true },
+          response_format: { type: "future_format" },
+          temperature: 0,
+          custom_option: { enabled: true },
+        },
+        profile === "bare" ? undefined : "synthetic",
+        profile === "agent",
+      ),
+      createLogger("warn", (entry) => {
+        entries.push(entry);
+      }),
+      "synthetic",
+      true,
+    );
+    assert.equal(parsed.includeUsage, false);
+    assert.equal(parsed.generation, undefined);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.event, "unsupported_chat_fields_ignored");
+    assert.deepEqual(entries[0]?.fields, [
+      "custom_option",
+      "n",
+      "parallel_tool_calls",
+      "response_format",
+      "stream_options.include_obfuscation",
+      "temperature",
+      "tool_choice",
+    ]);
+  }
   for (const extra of [
-    { functions: [] },
-    { function_call: "auto" },
-    { parallel_tool_calls: false },
-    { n: 2 },
+    { n: 0 },
+    { n: "3" },
+    { parallel_tool_calls: "false" },
+    { tool_choice: 1 },
+    { stream_options: { include_usage: "yes" } },
   ])
     assert.throws(
       () => validateRequest({ ...body, ...extra }, silentLogger, "test", true),
-      (error: unknown) =>
-        error instanceof HttpError && error.code === "unsupported_parameter",
+      HttpError,
     );
+});
+
+/** Converts old function declarations without discarding requested client tools. */
+test("legacy functions and selectors map to native tools and reject ambiguous declarations", () => {
+  const messages = [{ role: "user", content: "synthetic" }];
+  const functions = [
+    {
+      name: "lookup",
+      description: "synthetic",
+      parameters: { type: "object" },
+    },
+  ];
+  for (const function_call of ["auto", "required", { name: "lookup" }])
+    assert.deepEqual(
+      parse(messages, { functions, function_call }).dynamicTools,
+      [
+        {
+          type: "function",
+          name: "lookup",
+          description: "synthetic",
+          inputSchema: { type: "object" },
+        },
+      ],
+    );
+  assert.deepEqual(
+    parse(messages, { functions, function_call: "none" }).dynamicTools,
+    [],
+  );
+  assert.equal(
+    parse(messages, { functions }).requestPolicy.sandbox,
+    "disabled",
+  );
+  for (const extra of [
+    { functions: {} },
+    { functions: [{ name: "unsafe/name" }] },
+    { functions, tools: [] },
+    { function_call: "auto", tool_choice: "none" },
+    { tool_choice: { type: "function", function: {} } },
+  ])
+    assert.throws(() => parse(messages, extra), HttpError);
 });
 
 /** Accepts client probe token caps without promising an unavailable limit. */
@@ -396,15 +454,13 @@ test("token caps are validated and ignored with one explicit warning in every pr
             error.param === field,
         );
     }
-    assert.throws(
-      () =>
-        validateRequest(
-          adapt({ max_tokens: 16, max_completion_tokens: 16 }),
-          silentLogger,
-          "test",
-          true,
-        ),
-      /Use only one/,
+    assert.doesNotThrow(() =>
+      validateRequest(
+        adapt({ max_tokens: 16, max_completion_tokens: 16 }),
+        silentLogger,
+        "test",
+        true,
+      ),
     );
   }
 });
@@ -842,10 +898,8 @@ test("compatibility keeps invalid roles, null user/tool content and broken calls
     messages: [{ role: "user", content: [{ type: "text", text: "test" }] }],
   };
   assert.equal(adaptLocalBridgeRequest(body, undefined), body);
-  assert.throws(
-    () =>
-      parse([{ role: "user", content: "test" }], { tool_choice: "required" }),
-    /tool_choice/,
+  assert.doesNotThrow(() =>
+    parse([{ role: "user", content: "test" }], { tool_choice: "required" }),
   );
 });
 

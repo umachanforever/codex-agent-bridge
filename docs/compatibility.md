@@ -9,9 +9,11 @@ The proxy targets one app-server contract at a time. The current runtime depende
 | Codex home and authentication             | A proxy-owned Codex home is shared across roots; only `auth.json` is synchronized from the ordinary Codex home.                                        | Review on-disk cache/config formats and token handling before reusing that home with a new pin.                                                                           |
 | Continuation state                        | Each root has a separate durable response store with schema version 0.                                                                                 | Review the persisted record format and restart behavior; migrate an incompatible format explicitly or reject it without rewriting it.                                     |
 
-## Client token caps
+## Client parameter compatibility
 
-WorkBuddy connection probes include `max_tokens`. The proxy accepts a positive safe integer in either `max_tokens` or `max_completion_tokens` across all profiles, records one ignored-field warning with `output_token_limit_enforced: false`, and omits the cap from app-server calls. Malformed values and requests supplying both fields fail before model work. This allows probes and client requests to proceed, but app-server has no output-token-limit control, so clients cannot use these fields to bound output or cost. See the [client API](client-api.md#use-an-openai-client).
+All profiles accept well-formed client controls by default. Native reasoning, verbosity, and service-tier names are forwarded for app-server validation; the proxy does not maintain a second enum. JSON object output uses a generic object schema, and legacy function declarations map to dynamic tools. Parameters without a native equivalent are accepted and omitted with one structured warning: they are not forwarded as arbitrary `turn/start` fields, since app-server is a JSON-RPC service rather than a Chat Completions endpoint. Unknown fields never enter Codex configuration or execution policy.
+
+WorkBuddy connection probes include `max_tokens`. Both token-cap fields can coexist, but neither limits output or cost; their ignored-field warning includes `output_token_limit_enforced: false`. Similarly, `n` does not increase the one-choice response, and forced tool selection or `parallel_tool_calls: false` is not enforced. Malformed known values, conflicting tool declarations/selectors, and security or lifecycle constraints remain errors. Native JSON-RPC invalid-parameter rejections during setup return HTTP 400 `app_server_invalid_parameters`. See the [client API](client-api.md#whats-supported).
 
 ## Temporary model catalog override
 

@@ -92,14 +92,18 @@ curl http://127.0.0.1:8787/v1/models
 | `POST /v1/chat/completions` with text messages (`system`, `developer`, `user`, `assistant`, `tool`) and inline user images, audio, PDFs, and `x_codex` text/table files | Audio output and uploaded file IDs              |
 | `GET /v1/models` for visible models                                                                      | Responses API, embeddings, Images API, audio API, model changes |
 | Streaming (SSE, ends with `data: [DONE]`) and non-streaming                                              |                                                         |
-| `reasoning_effort` (`none` … `max`, forwarded to Codex)                                                  | `tool_choice` other than `"auto"` / `"none"`            |
+| `reasoning_effort`, verbosity, and service tier forwarded to app-server                                 | Forced tool selection                                   |
 | Client-defined function tools, `tool_calls`, `finish_reason: "tool_calls"`                               | More than one choice per response                       |
 | Default-on streaming usage chunks (`stream_options.include_usage: false` opts out)                       | Remote (non-loopback) serving                           |
 | OpenAI-shaped JSON errors                                                                                |                                                         |
 
 Model retrieval, deletion, and mutation endpoints are not supported.
 
-Harmless unsupported fields are ignored with one structured warning. Malformed or ambiguous input is rejected rather than approximated. For client compatibility, `max_tokens` or `max_completion_tokens` accepts a positive safe integer and is ignored: app-server cannot enforce an output token cap. The warning explicitly records `output_token_limit_enforced: false`; these fields do not bound output or model cost. Supplying both fields is rejected. The proxy rejects `n` other than `1`, `parallel_tool_calls: false`, and the legacy `functions` and `function_call` controls in every deployment profile.
+Client parameters are accepted by default. Native settings such as `reasoning_effort`, `verbosity`, and `service_tier` are forwarded without a proxy enum; app-server decides whether each name is supported. `service_tier: "auto"` retains the native default and `"fast"` maps to `"priority"`. `response_format: {"type":"json_schema",...}` forwards its schema; `json_object` maps to `{"type":"object"}` and `text` retains ordinary output. Other format types are accepted and ignored with a warning.
+
+Parameters without a native equivalent are ignored with one structured `unsupported_chat_fields_ignored` warning per request. This includes sampling controls, `n`, `parallel_tool_calls`, token caps, forced/named tool choices, unknown top-level fields, and extra `stream_options` fields. A response still has one choice, tool selection remains automatic, and parallelism or output size is not constrained by ignored controls. Both `max_tokens` and `max_completion_tokens` may be present; their warning explicitly records `output_token_limit_enforced: false`. Neither field bounds output or model cost.
+
+Legacy `functions` declarations map to dynamic function tools. `function_call` aliases `tool_choice`: `auto` exposes tools, `none` omits them, and other well-formed selectors fall back to automatic selection with a warning. Supplying both declaration sources (`tools` and `functions`) or both selector sources is ambiguous and rejected. Malformed known values, invalid message/tool structure, continuation mismatches, media resource limits, and unsafe or disallowed execution policies still produce OpenAI-shaped errors before model work. App-server JSON-RPC invalid-parameter rejections during setup return HTTP 400 `app_server_invalid_parameters`, with a public summary rather than the raw native error message.
 
 User messages may contain an ordered array of `text`, `image_url`, `input_audio`,
 and `file` parts. An
