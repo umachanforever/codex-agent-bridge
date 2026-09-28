@@ -48,6 +48,8 @@ function confirm(key: Key, kind: "reveal" | "rotate") {
   target.value = key;
   action.value = kind;
   token.value = "";
+  secret.value = "";
+  copied.value = false;
 }
 async function reveal() {
   await run(async () => {
@@ -56,7 +58,8 @@ async function reveal() {
       { token: token.value },
     );
     token.value = "";
-    target.value = undefined;
+    // Keep the result in this modal: a closing confirmation dialog can cover
+    // a second dialog while its exit transition is still running.
     secret.value = result.secret;
     copied.value = false;
     await load();
@@ -155,29 +158,53 @@ onMounted(() => run(load));
   <n-modal
     :show="!!target"
     preset="card"
-    :title="action === 'rotate' ? '确认轮换密钥' : '确认查看完整密钥'"
+    :title="
+      secret
+        ? action === 'rotate'
+          ? '新密钥'
+          : '完整 API key'
+        : action === 'rotate'
+          ? '确认轮换密钥'
+          : '确认查看完整密钥'
+    "
     class="dialog"
     @update:show="
       (show: boolean) => {
         if (!show) {
           target = undefined;
           token = '';
+          secret = '';
         }
       }
     "
-    ><p>请输入管理口令，确认这是你本人操作。</p>
-    <n-input
-      v-model:value="token"
-      type="password"
-      placeholder="管理口令"
-      @keydown.enter="reveal"
-    /><n-alert v-if="error" type="error">{{ error }}</n-alert
-    ><n-button type="primary" :loading="busy" :disabled="!token" @click="reveal"
-      >确认</n-button
-    ></n-modal
+    ><template v-if="secret">
+      <p v-if="action === 'rotate'">旧密钥已失效，请复制并更新客户端配置。</p>
+      <p v-else>仅提供给你信任的客户端。不要发送到聊天记录或公开仓库。</p>
+      <n-input :value="secret" readonly aria-label="完整 API key" />
+      <n-button type="primary" @click="copy">{{
+        copied ? "已复制" : "复制密钥"
+      }}</n-button>
+    </template>
+    <template v-else>
+      <p>请输入管理口令，确认这是你本人操作。</p>
+      <n-input
+        v-model:value="token"
+        type="password"
+        placeholder="管理口令"
+        @keydown.enter="reveal"
+      />
+      <n-alert v-if="error" type="error">{{ error }}</n-alert>
+      <n-button
+        type="primary"
+        :loading="busy"
+        :disabled="!token"
+        @click="reveal"
+        >确认</n-button
+      >
+    </template></n-modal
   >
   <n-modal
-    :show="!!secret"
+    :show="!!secret && !target"
     preset="card"
     title="完整 API key"
     class="dialog"

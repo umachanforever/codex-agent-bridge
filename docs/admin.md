@@ -65,7 +65,8 @@ address, filesystem root and execution permissions cannot be changed through the
 
 Managed client keys can be created, revealed, rotated and disabled. Lists show only
 prefixes. Revealing or rotating requires re-entering the administrator token. Rotation
-invalidates the old managed bearer; disabling stops accepting it for new requests,
+invalidates the old managed bearer and shows the replacement in the same confirmation
+dialog for copying; disabling stops accepting it for new requests,
 not work already executing. The agent-service profile still accepts those requests
 without a valid key but no longer attributes them to it. The local bridge profile
 requires another valid key.
