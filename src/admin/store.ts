@@ -299,9 +299,18 @@ export class AdminStore {
     }
     const where = clauses.join(" AND ");
     const cost = "reference_cost(model,input,output,cached)";
+    // An empty result has exactly zero usage; a nonempty result with no
+    // measurements must keep NULL so missing upstream counts stay visible.
+    const usageTotals = ["input", "output", "cached", "reasoning", "total"]
+      .map(
+        (column) =>
+          `CASE WHEN COUNT(*)=0 THEN 0 ELSE SUM(${column}) END AS ${column}`,
+      )
+      .join(", ");
     const aggregate =
       `SUM(${cost}) AS costUsd, COUNT(${cost}) AS priced, ` +
-      "COUNT(*) AS requests, SUM(CASE WHEN status>=200 AND status<300 AND error IS NULL THEN 1 ELSE 0 END) AS successful, COUNT(total) AS measured, SUM(input) AS input, SUM(output) AS output, SUM(cached) AS cached, SUM(reasoning) AS reasoning, SUM(total) AS total";
+      "COUNT(*) AS requests, SUM(CASE WHEN status>=200 AND status<300 AND error IS NULL THEN 1 ELSE 0 END) AS successful, COUNT(total) AS measured, " +
+      usageTotals;
     return {
       pricing: this.prices(),
       summary: this.#db

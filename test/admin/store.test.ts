@@ -37,6 +37,23 @@ test("usage is attributed once per request and missing counters remain unknown",
   await withTempDir(async (root) => {
     const store = new AdminStore(root);
     try {
+      const empty = store.report().summary as {
+        requests: number;
+        input: number;
+        output: number;
+        cached: number;
+        reasoning: number;
+        total: number;
+      };
+      assert.equal(empty.requests, 0);
+      for (const counter of [
+        "input",
+        "output",
+        "cached",
+        "reasoning",
+        "total",
+      ] as const)
+        assert.equal(empty[counter], 0);
       const entry = {
         id: "one",
         keyId: "workbuddy",
@@ -91,6 +108,10 @@ test("usage is attributed once per request and missing counters remain unknown",
       assert.equal(
         (store.report({ model: "other" }).summary as { requests: number })
           .requests,
+        0,
+      );
+      assert.equal(
+        (store.report({ model: "other" }).summary as { total: number }).total,
         0,
       );
       store.saveSettings({

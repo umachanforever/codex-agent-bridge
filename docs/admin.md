@@ -102,8 +102,9 @@ sensitive-data policy and are not ingested by the console.
 
 Token snapshots come from the existing attributable app-server usage normalization,
 even if a streaming client did not ask for usage chunks. Cache and reasoning counters
-are subsets, never added again to totals. Missing values remain NULL/unknown, and
-the UI shows how many requests have measurements. Counts are not subscription
+are subsets, never added again to totals. An empty result shows zero token usage;
+when requests exist but app-server supplied no counts, values remain NULL/unknown.
+The UI shows how many requests have measurements. Counts are not subscription
 remaining quota or actual billed cost. No historical requests are reconstructed.
 
 Token cards, request rows and chart axes/tooltips display M (1,000,000 tokens)
