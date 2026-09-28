@@ -198,7 +198,7 @@ onMounted(async () => {
         </header>
         <n-alert v-if="error" type="error">{{ error }}</n-alert>
         <n-alert v-if="localLogin" type="warning" class="notice"
-          >本机免登录已开启：请勿通过代理或隧道开放此后台。查看、轮换密钥仍需管理口令。</n-alert
+          >本机免登录已开启：请勿通过代理或隧道开放此后台。查看现有密钥仍需管理口令；已登录会话可确认轮换并取得新密钥。</n-alert
         >
         <n-spin :show="!overview">
           <UsagePanel

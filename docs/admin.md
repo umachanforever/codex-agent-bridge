@@ -85,7 +85,9 @@ retain an explicit CSRF token and exact same-origin checks on writes. The model
 API still rejects browser Origin headers.
 All management responses use no-store; external scripts and framing are blocked.
 Management login/reveal attempts are limited. This is an HTTP loopback console, not
-an Internet-facing TLS or multi-user system. All authorized clients are trusted:
+an Internet-facing TLS or multi-user system. Only failed password checks consume
+the one-minute attempt budget; successful logins and reveals reset it instead of
+locking out normal administrator work. All authorized clients are trusted:
 key separation provides revocation/accounting, not filesystem or thread isolation.
 Full-access model tools can read files accessible to the host account, including
 management files; browser authentication does not sandbox those tools.

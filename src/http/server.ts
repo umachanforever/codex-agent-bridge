@@ -358,7 +358,11 @@ export function createProxyServer(
         metadata.status = 200;
         return result.content;
       } catch (error) {
-        metadata.status = controller.signal.aborted ? 499 : 502;
+        metadata.status = controller.signal.aborted
+          ? controller.signal.reason?.message === "request timeout"
+            ? 408
+            : 499
+          : 502;
         metadata.error =
           error instanceof HttpError
             ? String(error.code)

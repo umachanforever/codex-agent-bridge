@@ -103,3 +103,39 @@ test("internal text completion shares Codex execution without HTTP authorization
     }
   });
 });
+
+/** Internal deadlines are server timeouts, distinct from caller cancellation. */
+test("internal completion records its own deadline as 408", async () => {
+  await withTempDir(async (root) => {
+    const administration = new AdminStore(join(root, "admin"));
+    const fake = createFakeTransport({ onMessage() {} });
+    const { proxy } = await startProxyWithTransport(fake.rpc, {
+      root,
+      stateDir: root,
+      requestTimeoutMs: 10,
+      administration,
+    });
+    try {
+      await assert.rejects(
+        proxy.completeText(
+          {
+            model: "synthetic",
+            messages: [{ role: "user", content: "Wait." }],
+            x_codex: { sandbox: "disabled", web_search: "disabled" },
+          },
+          new AbortController().signal,
+        ),
+        /request timeout/,
+      );
+      const report = administration.report() as {
+        rows: Array<{ status: number; error: string }>;
+      };
+      assert.equal(report.rows.length, 1);
+      assert.equal(report.rows[0]?.status, 408);
+    } finally {
+      await proxy.close();
+      fake.close();
+      administration.close();
+    }
+  });
+});

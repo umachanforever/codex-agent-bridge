@@ -97,7 +97,7 @@ export function createAdminServer(options: AdminOptions) {
   const sessions = new Map<string, Session>();
   const credentialVersion =
     options.verifyToken.version ?? randomBytes(32).toString("hex");
-  let attempts = 0;
+  let failedAttempts = 0;
   let windowStart = Date.now();
   let priceLookup: AbortController | undefined;
   let lastPriceLookup = 0;
@@ -107,11 +107,20 @@ export function createAdminServer(options: AdminOptions) {
   );
   const authorizedAttempt = (token: unknown): boolean => {
     if (Date.now() - windowStart > 60000) {
-      attempts = 0;
+      failedAttempts = 0;
       windowStart = Date.now();
     }
-    if (++attempts > 20) return false;
-    return options.verifyToken(token);
+    // Successful logins and key reveals are ordinary administrator work, not
+    // brute-force attempts. Counting them would lock out the valid credential
+    // after twenty operations in one minute.
+    const valid = options.verifyToken(token);
+    if (failedAttempts >= 20) return false;
+    if (valid) {
+      failedAttempts = 0;
+      return true;
+    }
+    failedAttempts += 1;
+    return false;
   };
   const server = createServer((request, response) => {
     response.setHeader("x-content-type-options", "nosniff");

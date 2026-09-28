@@ -100,6 +100,45 @@ test("remembered sessions survive restart, revoke on logout and bind to credenti
   });
 });
 
+/** Successful verification must not exhaust the failed-attempt throttle. */
+test("successful admin logins do not lock out the valid credential", async () => {
+  await withTempDir(async (root) => {
+    const store = new AdminStore(root);
+    const config = await resolveServeOptions(
+      parseServeOptions([
+        "--root",
+        root,
+        "--state-dir",
+        root,
+        "--agent-service-model",
+        "synthetic",
+      ]),
+    );
+    const server = createAdminServer({
+      host: "127.0.0.1",
+      port: 0,
+      store,
+      config,
+      verifyToken: (value) => value === "synthetic-admin",
+      status: () => ({ ready: false, active: 0 }),
+    });
+    const origin = `http://127.0.0.1:${await server.listen()}`;
+    try {
+      for (let index = 0; index < 25; index += 1) {
+        const response = await fetch(origin + "/admin/api/login", {
+          method: "POST",
+          headers: { origin, "content-type": "application/json" },
+          body: JSON.stringify({ token: "synthetic-admin" }),
+        });
+        assert.equal(response.status, 200);
+      }
+    } finally {
+      await server.close();
+      store.close();
+    }
+  });
+});
+
 /** Local bypass remains opt-in and cannot skip origin, proxy or reauthentication gates. */
 test("local login is explicit and rejects forwarded and cross-site requests", async () => {
   await withTempDir(async (root) => {
