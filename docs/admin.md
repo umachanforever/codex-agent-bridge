@@ -44,7 +44,9 @@ after this change; stored server-side sessions are not automatically imported.
 
 `--admin-auth local --admin-port 8789` explicitly opts a trusted native installation
 into password-free initial entry; the default is `--admin-auth password`. Sessions,
-CSRF, exact same-origin checks and sensitive-key reauthentication remain enabled.
+CSRF and exact same-origin checks remain enabled. Revealing an existing key still
+requires the administrator password; rotating a key uses the active session and
+an explicit confirmation instead.
 The UI displays a warning. Official container startup disables this mode, and
 common container markers are rejected. Forwarded requests and non-loopback peers
 are rejected by local login.
@@ -64,9 +66,11 @@ address, filesystem root and execution permissions cannot be changed through the
 ## Keys and browser security
 
 Managed client keys can be created, revealed, rotated and disabled. Lists show only
-prefixes. Revealing or rotating requires re-entering the administrator token. Rotation
-invalidates the old managed bearer and shows the replacement in the same confirmation
-dialog for copying; disabling stops accepting it for new requests,
+prefixes. Revealing an existing key requires re-entering the administrator token.
+Rotation needs an active administrator session, same-origin CSRF token and an explicit
+confirmation, but no second password entry. A stolen active session can therefore
+rotate and obtain a replacement key. Rotation invalidates the old managed bearer and
+shows the replacement for copying; disabling stops accepting it for new requests,
 not work already executing. The agent-service profile still accepts those requests
 without a valid key but no longer attributes them to it. The local bridge profile
 requires another valid key.

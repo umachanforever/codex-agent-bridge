@@ -100,6 +100,8 @@ docker compose -f compose.yaml -f compose.local-auth.yaml ps
 
 控制台将当前浏览器来源的会话凭据保存在会话存储中；选择“记住登录”时改用本地存储。请使用可信的本地浏览器配置，详见[Web 管理](docs/admin.md#keys-and-browser-security)。
 
+轮换密钥只需已登录管理员确认操作，无须再次输入管理口令；查看现有密钥仍需重新输入管理口令。
+
 没有匹配请求时，用量卡片显示 0 token；已有请求但上游未提供用量计数时显示“未知”，不会虚构计数。
 
 请勿提交 `secrets/`、`deploy/local/`、登录文件、运行时日志或数据库。日志可能包含敏感文本。Docker 默认最多处理 10000 个并发请求，请求体上限为 128 MiB，期限为六小时；重启会中断进行中的请求。

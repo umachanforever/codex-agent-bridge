@@ -379,16 +379,21 @@ export function createAdminServer(options: AdminOptions) {
         json(response, 200, { ok: true });
         return;
       }
+      if (keyRoute[2] === "rotate") {
+        if (input.confirm !== true) {
+          json(response, 400, { error: "请确认轮换会使旧密钥失效。" });
+          return;
+        }
+        // A logged-in, same-origin session and CSRF token authorize rotation;
+        // revealing an existing key still requires the administrator password.
+        json(response, 200, { secret: options.store.rotateKey(key) });
+        return;
+      }
       if (!authorizedAttempt(input.token)) {
         json(response, 401, { error: "请重新确认管理口令。" });
         return;
       }
-      json(response, 200, {
-        secret:
-          keyRoute[2] === "reveal"
-            ? options.store.revealKey(key)
-            : options.store.rotateKey(key),
-      });
+      json(response, 200, { secret: options.store.revealKey(key) });
       return;
     }
     if (path === "usage" && request.method === "GET") {

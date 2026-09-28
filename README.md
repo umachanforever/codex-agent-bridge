@@ -103,6 +103,8 @@ The admin password and client API keys are separate. The console requires login 
 
 The console stores its session bearer for this browser origin in session storage, or in local storage when “remember login” is selected. Use it from a trusted local browser profile; see [web management](docs/admin.md#keys-and-browser-security).
 
+Key rotation needs a logged-in administrator and confirmation, without a second password entry. Revealing an existing key still asks for the administrator password.
+
 Usage cards show zero tokens when no requests match; when requests exist without upstream usage counts, they show unknown rather than inventing a count.
 
 Do not commit `secrets/`, `deploy/local/`, login files, runtime logs, or databases. Logs may contain sensitive text. Docker defaults to 10,000 concurrent requests, a 128 MiB request body limit, and a six-hour deadline; restarting interrupts active requests.

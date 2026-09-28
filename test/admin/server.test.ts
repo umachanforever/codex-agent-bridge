@@ -240,6 +240,24 @@ test("management login, CSRF, key reveal and logout are isolated from client bea
         })
       ).json()) as { secret: string };
       assert.equal(revealed.secret, key.secret);
+      assert.equal((await post(`keys/${key.id}/rotate`, {})).status, 400);
+      assert.equal(
+        (
+          await post(
+            `keys/${key.id}/rotate`,
+            { confirm: true },
+            { "x-csrf-token": "wrong" },
+          )
+        ).status,
+        403,
+      );
+      const rotated = (await (
+        await post(`keys/${key.id}/rotate`, { confirm: true })
+      ).json()) as { secret: string };
+      assert.match(rotated.secret, /^sk-[A-Za-z0-9_-]{43}$/);
+      assert.notEqual(rotated.secret, key.secret);
+      assert.equal(store.authenticate(key.secret), undefined);
+      assert.equal(store.authenticate(rotated.secret), key.id);
       const listing = await fetch(`${origin}/admin/api/keys`, {
         headers: { "x-admin-session": session },
       });

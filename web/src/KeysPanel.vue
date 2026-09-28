@@ -44,18 +44,33 @@ async function enabled(key: Key) {
     await load();
   });
 }
-function confirm(key: Key, kind: "reveal" | "rotate") {
+function confirmReveal(key: Key) {
   target.value = key;
-  action.value = kind;
+  action.value = "reveal";
   token.value = "";
   secret.value = "";
   copied.value = false;
 }
+/** Rotates after the visible confirmation without asking for the password again. */
+async function rotate(key: Key) {
+  await run(async () => {
+    const result = await api<{ secret: string }>(`keys/${key.id}/rotate`, {
+      confirm: true,
+    });
+    target.value = key;
+    action.value = "rotate";
+    secret.value = result.secret;
+    copied.value = false;
+    await load();
+  });
+}
 async function reveal() {
   await run(async () => {
     const result = await api<{ secret: string }>(
-      `keys/${target.value!.id}/${action.value}`,
-      { token: token.value },
+      `keys/${target.value!.id}/reveal`,
+      {
+        token: token.value,
+      },
     );
     token.value = "";
     // Keep the result in this modal: a closing confirmation dialog can cover
@@ -130,11 +145,13 @@ onMounted(() => run(load));
               }}
             </td>
             <td class="actions">
-              <n-button size="small" quaternary @click="confirm(key, 'reveal')"
+              <n-button size="small" quaternary @click="confirmReveal(key)"
                 >查看</n-button
-              ><n-popconfirm @positive-click="confirm(key, 'rotate')"
+              ><n-popconfirm @positive-click="rotate(key)"
                 ><template #trigger
-                  ><n-button size="small" quaternary>轮换</n-button></template
+                  ><n-button size="small" quaternary :disabled="busy"
+                    >轮换</n-button
+                  ></template
                 >轮换后旧密钥立即失效，继续？</n-popconfirm
               ><n-button
                 size="small"

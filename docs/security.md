@@ -21,7 +21,7 @@
 
 ## Origin policy
 
-The model API rejects every request containing an `Origin` header, even if the value names a loopback URL and even on health routes. Native clients should omit `Origin`. The optional management listener is separate: it requires an administrator session, exact same-origin mutations and CSRF tokens. Adding the console does not relax model API Origin checks.
+The model API rejects every request containing an `Origin` header, even if the value names a loopback URL and even on health routes. Native clients should omit `Origin`. The optional management listener is separate: it requires an administrator session, exact same-origin mutations and CSRF tokens. A logged-in administrator may rotate a managed key after confirmation without re-entering the password; revealing an existing key still requires it. An exposed active admin session can therefore rotate and obtain a replacement key. Adding the console does not relax model API Origin checks.
 
 ## Data and diagnostics audit
 

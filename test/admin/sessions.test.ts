@@ -173,6 +173,21 @@ test("local login is explicit and rejects forwarded and cross-site requests", as
         ).status,
         401,
       );
+      const rotated = await fetch(origin + `/admin/api/keys/${key.id}/rotate`, {
+        method: "POST",
+        headers: {
+          origin,
+          "x-admin-session": session,
+          "content-type": "application/json",
+          "x-csrf-token": csrf,
+        },
+        body: JSON.stringify({ confirm: true }),
+      });
+      assert.equal(rotated.status, 200);
+      assert.notEqual(
+        ((await rotated.json()) as { secret: string }).secret,
+        key.secret,
+      );
       config.adminAuth = "password";
       assert.equal((await post()).status, 403);
     } finally {
