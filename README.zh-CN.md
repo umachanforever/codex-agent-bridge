@@ -100,7 +100,7 @@ docker compose -f compose.yaml -f compose.local-auth.yaml ps
 
 控制台将当前浏览器来源的会话凭据保存在会话存储中；选择“记住登录”时改用本地存储。请使用可信的本地浏览器配置，详见[Web 管理](docs/admin.md#keys-and-browser-security)。
 
-轮换密钥只需已登录管理员确认操作，无须再次输入管理口令；查看现有密钥仍需重新输入管理口令。
+已登录管理员可确认轮换密钥；查看现有密钥需要管理口令。
 
 没有匹配请求时，用量卡片显示 0 token；已有请求但上游未提供用量计数时显示“未知”，不会虚构计数。
 
@@ -117,5 +117,3 @@ docker compose -f compose.yaml -f compose.local-auth.yaml ps
 ## 许可
 
 本项目基于 [MIT 许可证](LICENSE) 发布。版权所有 © 2026 umachanforever。
-
-缓存刷新失败时会保留上一版目录，畸形非有限用量计数会被忽略。
