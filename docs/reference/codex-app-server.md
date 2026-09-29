@@ -2,7 +2,7 @@
 
 ## Pinned compatibility note
 
-Reviewed on 2026-09-22 against [`rust-v0.155.1`](https://github.com/openai/codex/tree/rust-v0.155.1), using the package-generated [wire contract](../protocol/CONTRACT.md), [upstream protocol source](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/app-server-protocol/src/protocol/v2/mod.rs), and [0.155.1 release notes](https://github.com/openai/codex/releases/tag/rust-v0.155.1). The previous 0.154.0 reference text is retained where unchanged; generated artifacts and the proxy contract take precedence.
+Reviewed on 2026-09-22 against [`rust-v0.155.1`](https://github.com/openai/codex/tree/rust-v0.155.1), using the package-generated [wire contract](../../protocol/CONTRACT.md), [upstream protocol source](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/app-server-protocol/src/protocol/v2/mod.rs), and [0.155.1 release notes](https://github.com/openai/codex/releases/tag/rust-v0.155.1). The previous 0.154.0 reference text is retained where unchanged; generated artifacts and the proxy contract take precedence.
 
 Version 0.155.1 adds generated methods for memory status, thread attachments, and user-verification cancellation; adds a thread-attachment notification; and adds nullable `promptHash` to feedback upload results. These are additive and unused by the proxy. The only 0.155.1 release-note behavior change restores the local TUI's default reasoning summary to `none`; this proxy explicitly requests its configured summary and is unaffected.
 

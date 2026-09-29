@@ -341,7 +341,8 @@ async function main() {
     assert.equal(packResult.filename, expectedTarballName);
     const expectedFiles = new Set([
       "README.md",
-      "README.zh-CN.md",
+      "docs/README.md",
+      "docs/zh-CN/README.md",
       "LICENSE",
       "package.json",
       "protocol/VERSION.json",

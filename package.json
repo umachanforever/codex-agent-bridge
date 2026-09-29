@@ -27,7 +27,7 @@
     "dist",
     "web-dist",
     "README.md",
-    "README.zh-CN.md",
+    "docs/zh-CN/README.md",
     "LICENSE",
     "protocol/schemas",
     "protocol/VERSION.json"

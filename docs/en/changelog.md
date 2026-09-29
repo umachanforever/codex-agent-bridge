@@ -1,6 +1,12 @@
 # Changelog
 
+English | [简体中文](../zh-CN/changelog.md)
+
 Notable changes to Codex Agent Bridge are recorded from version 0.3.0 onward.
+
+## Unreleased
+
+- Keep standard `tool_calls` exclusively for client-executed functions and expose Codex-owned activity under `x_codex.activity`.
 
 ## 0.3.0 — September 24, 2026
 

@@ -1,6 +1,6 @@
 # Repository guide
 
-This guide is for contributors to `codex-agent-bridge`. Installation belongs in the [root README](../README.md); API behavior and `x_codex` extensions belong in the [client API reference](client-api.md). Runtime design lives in [architecture](architecture.md), [continuation](continuation.md), and [compatibility](compatibility.md); release gates live in the [release checklist](../RELEASE.md).
+This guide is for contributors to `codex-agent-bridge`. Installation belongs in the [root README](../../README.md); API behavior and `x_codex` extensions belong in the [client API reference](../en/client-api.md). Runtime design lives in [architecture](architecture.md), [continuation](continuation.md), and [compatibility](../en/compatibility.md); release gates live in the [release checklist](../en/release.md).
 
 ## Requirements
 
@@ -11,7 +11,7 @@ This guide is for contributors to `codex-agent-bridge`. Installation belongs in 
 Install dependencies and run the complete offline gate:
 
 ```sh
-npm install
+npm ci
 npm run check
 ```
 
@@ -34,7 +34,7 @@ The maintained TypeScript modules are grouped by domain so the public HTTP contr
 
 `protocol/` contains the generated app-server protocol structures consumed by maintained code and tests. The exact `@openai/codex` dependency in `package.json` is the single version source for default runtime startup, generation, and the checked-in contract metadata. Runtime startup and generation invoke the package-owned JavaScript entry point through the current Node.js executable so it works consistently across supported operating systems; an explicit override remains a directly spawned host executable. Regenerate the artifacts with `npm run generate:protocol` after changing that pin; the command rejects an install/version mismatch, recreates both generated trees, and updates `protocol/VERSION.json`. Do not hand-edit generated output. `npm run check:protocol` seeds and regenerates a temporary protocol root, then compares every generated file and `VERSION.json` with the checked-in tree, so required CI detects removed, added, or changed artifacts without rewriting the workspace or using the network.
 
-`docs/codex-app-server.md` is a checked-in upstream protocol reference. [Architecture](architecture.md), [continuation](continuation.md), and [compatibility](compatibility.md) describe proxy-owned decisions.
+`docs/reference/codex-app-server.md` is a checked-in upstream protocol reference. [Architecture](architecture.md), [continuation](continuation.md), and [compatibility](../en/compatibility.md) describe proxy-owned decisions.
 
 ## Development commands
 
@@ -56,7 +56,7 @@ The default local test command excludes `*.live.test.ts`, never makes a model ca
 
 The protocol cleanliness check seeds a temporary protocol root, regenerates there with the package-owned executable and version pin, compares the complete file set and contents, and removes the temporary root in a `finally` path. It never rewrites checked-in artifacts; `npm run generate:protocol` remains the explicit mutating command.
 
-From a repository checkout, `npm run models:live` lists full app-server model metadata without starting a model turn; add `-- --include-hidden` for hidden entries or `-- --json` for complete metadata. The [README](client-api.md#whats-supported) owns the public `GET /v1/models` behavior, and [compatibility](compatibility.md#temporary-model-catalog-override) explains startup catalog refresh.
+From a repository checkout, `npm run models:live` lists full app-server model metadata without starting a model turn; add `-- --include-hidden` for hidden entries or `-- --json` for complete metadata. The [client API](../en/client-api.md#whats-supported) owns the public `GET /v1/models` behavior, and [compatibility](../en/compatibility.md#temporary-model-catalog-override) explains startup catalog refresh.
 
 ## Updating upstream Codex
 
@@ -70,7 +70,7 @@ This resolves the npm `latest` release to an exact version; pass `-- <exact-vers
 
 Failures return a nonzero exit code and leave the attempted update available for inspection. Diagnose and repair compatibility, then run `npm run update:codex -- --check` to repeat validation without reinstalling or regenerating the working tree. Installation or generation failures stop immediately; independent validation gates all run even if one fails.
 
-Even a green run requires review of upstream protocol changes, policy behavior, existing proxy homes and continuation stores, and the version-specific Responses Lite workaround. Record the decision and persistence consequence in [compatibility](compatibility.md) and update current-version documentation before release. The normal pull-request OS matrix remains required; live verification is a separate opt-in below.
+Even a green run requires review of upstream protocol changes, policy behavior, existing proxy homes and continuation stores, and the version-specific Responses Lite workaround. Record the decision and persistence consequence in [compatibility](../en/compatibility.md) and update current-version documentation before release. The normal pull-request OS matrix remains required; live verification is a separate opt-in below.
 
 ## Continuous integration
 
@@ -108,8 +108,9 @@ Transport framing, malformed-frame handling, process failures, and other fault i
 
 Keep documentation aligned with its audience:
 
-- Describe installation in `README.md`; keep detailed compatibility and `x_codex` extensions in `docs/client-api.md`.
-- Record architecture, repository layout, contributor workflows, and testing details under `docs/`.
-- Record current runtime decisions in [architecture](architecture.md) and [continuation](continuation.md), upstream compatibility decisions in [compatibility](compatibility.md), and release gates in the [release checklist](../RELEASE.md).
+- Keep user documentation paired under `docs/en/` and `docs/zh-CN/`; links within either set stay in that language except for the explicit language switcher.
+- Describe installation in the matching root README; keep detailed compatibility and `x_codex` extensions in the matching client API page.
+- Keep unlocalized contributor workflows and pinned upstream material under `docs/reference/`.
+- Record current runtime decisions in [architecture](architecture.md) and [continuation](continuation.md), upstream compatibility decisions in [compatibility](../en/compatibility.md), and release gates in the [release checklist](../en/release.md).
 
-When a design decision changes, update its topic page and any user-facing contract it affects. Label `previous_response_id`, reasoning deltas, and internal tool-result deltas as nonstandard extensions; only namespaced controls and metadata live under `x_codex`.
+When a design decision changes, update its topic page and any user-facing contract it affects. Label `previous_response_id` and reasoning deltas as nonstandard extensions, and keep Codex-owned activity under response-level `x_codex.activity`.

@@ -1,5 +1,7 @@
 # Docker deployment
 
+English | [简体中文](../zh-CN/docker.md)
+
 Docker Compose builds the proxy from this repository and publishes it only on
 `127.0.0.1`. The bridge container runs the pinned app-server with a separate
 writable Codex home. The gateway serves the model API and management console.
@@ -7,7 +9,7 @@ writable Codex home. The gateway serves the model API and management console.
 ## Choose an authentication source
 
 For an existing local Codex login, follow the key creation steps in the
-[README](../README.md#deploy-with-docker), set `LOCAL_CODEX_HOME` to the directory
+[README](../../README.md#deploy-with-docker), set `LOCAL_CODEX_HOME` to the directory
 containing `auth.json`, and start the standard deployment:
 
 ```sh
@@ -17,12 +19,6 @@ docker compose -f compose.yaml -f compose.local-auth.yaml ps
 
 The source directory is mounted read-only. The container copies a newer
 `auth.json` into its own writable volume; it does not modify the source.
-
-Even with `danger-full-access` or `--local-host-tools true`, built-in tools in a
-container can only access mounted paths using container path names. For direct
-Mac paths across the host filesystem, run the proxy as a native macOS process
-with `--root /` and the local-profile opt-in. macOS file permissions and
-privacy grants still apply.
 
 For a separate container login, set `BRIDGE_AUTH_MODE=independent` and use
 `compose.yaml` without the local-auth override. Complete the device-code login

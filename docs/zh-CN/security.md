@@ -1,6 +1,8 @@
-# Security policy
+# 安全策略
 
-当前维护 `main` 分支。尚无长期支持或安全响应时限承诺。设计边界见 [安全模型](docs/security.md)。
+[English](../en/security.md) | 简体中文
+
+当前维护 `main` 分支。尚无长期支持或安全响应时限承诺。实现层面的威胁模型与控制措施见[安全模型（英文参考）](../reference/security.md)。
 
 ## 报告漏洞
 

@@ -1,6 +1,6 @@
 # Continuation and client tools
 
-This page explains how the proxy preserves a Codex thread across Chat Completions requests. It is for contributors changing continuation, dynamic tools, or usage accounting. For the client request format, see [Function tools and Codex-specific extensions](client-api.md#function-tools).
+This page explains how the proxy preserves a Codex thread across Chat Completions requests. It is for contributors changing continuation, dynamic tools, or usage accounting. For the client request format, see [Function tools and Codex-specific extensions](../en/client-api.md#function-tools).
 
 ## Durable response mappings
 
@@ -13,11 +13,11 @@ The proxy returns an opaque Chat Completions response ID and stores its Codex th
 | Pending call ID, name, and exact argument string                                           | Rebuild each complete `function_call`/`function_call_output` pair after a client returns tool results, including after a proxy restart.                 |
 | Optional exact cumulative `usageTotal`                                                     | Establish the next response's token-accounting boundary without estimating missing usage. An all-zero boundary is valid.                                |
 
-The [store schema](../protocol/schemas/response-mapping.schema.json) describes the persisted shape. `ResponseStore` owns disk writes and retention; `ContinuationCoordinator` owns transport-generation leases and dynamic-tool callback routing. Both live in [`src/continuation/state.ts`](../src/continuation/state.ts).
+The [store schema](../../protocol/schemas/response-mapping.schema.json) describes the persisted shape. `ResponseStore` owns disk writes and retention; `ContinuationCoordinator` owns transport-generation leases and dynamic-tool callback routing. Both live in [`src/continuation/state.ts`](../../src/continuation/state.ts).
 
 ## Admission before execution
 
-[`prepareContinuation`](../src/http/chat-execute.ts) makes one synchronous choice before any app-server setup RPC. An explicit `previous_response_id` selects a record; without one, a terminal contiguous tool-result block can identify exactly one unexpired pending record by its call IDs. Implicit lookup can be disabled through the CLI. A compatible record must also have an available local thread lease. The proxy reports native reuse only after `thread/resume` and the next `turn/start` succeed.
+[`prepareContinuation`](../../src/http/chat-execute.ts) makes one synchronous choice before any app-server setup RPC. An explicit `previous_response_id` selects a record; without one, a terminal contiguous tool-result block can identify exactly one unexpired pending record by its call IDs. Implicit lookup can be disabled through the CLI. A compatible record must also have an available local thread lease. The proxy reports native reuse only after `thread/resume` and the next `turn/start` succeed.
 
 | Condition                                                                                                                  | Outcome                                                                                                                                              |
 | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -70,4 +70,4 @@ Completed and interrupted turns collect updates for a fixed one-second window af
 
 After persisting the continuation, streaming emits the final usage once in an empty-choice chunk, then the finish reason and `[DONE]`. Clients stopping at `finish_reason` receive counts without duplicate usage records. Clients must locate the usage field instead of assuming usage occupies the last chunk. Explicit `stream_options.include_usage: false` suppresses only its HTTP output, not collection or boundary persistence.
 
-Each successful response records the exact boundary the next response should use. A pending tool response that receives no usage keeps its starting boundary, allowing the continuation to report those tokens when app-server later attributes them. The handoff therefore does not invent usage or discard a known zero boundary. See [`src/http/chat-normalize.ts`](../src/http/chat-normalize.ts) for attribution and [`src/http/chat-execute.ts`](../src/http/chat-execute.ts) for persistence at terminal events.
+Each successful response records the exact boundary the next response should use. A pending tool response that receives no usage keeps its starting boundary, allowing the continuation to report those tokens when app-server later attributes them. The handoff therefore does not invent usage or discard a known zero boundary. See [`src/http/chat-normalize.ts`](../../src/http/chat-normalize.ts) for attribution and [`src/http/chat-execute.ts`](../../src/http/chat-execute.ts) for persistence at terminal events.

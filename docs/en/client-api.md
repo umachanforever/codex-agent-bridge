@@ -1,6 +1,8 @@
 # Client API reference
 
-This reference describes the proxy's Chat Completions API and compatibility behavior. Start with the [installation guide](../README.md). Agent clients should enable `--agent-service-model`; the bare CLI retains legacy defaults.
+English | [简体中文](../zh-CN/client-api.md)
+
+This reference describes the proxy's Chat Completions API and compatibility behavior. Start with the [installation guide](../../README.md). The source examples use the agent-service profile enabled by `--agent-service-model`.
 
 ## Authentication
 
@@ -19,16 +21,13 @@ Notes:
 - Completions return `app_server_not_ready` and `/ready` returns 503 until login finishes.
 - The login deadline is fixed at 5 minutes.
 - `--sync-auth never` leaves the proxy's Codex home untouched, including when the source has newer credentials. The only other mode is the default, `always`.
-- The proxy never writes credentials back to the main Codex home.
 - ChatGPT refresh tokens are single-use. Sharing copies of one login between Codex and the proxy can invalidate a stored refresh token. If this happens, sign in locally and restart; for separately authenticated operation explicitly choose `--auth-mode independent`.
 - Treat authorization URLs and device codes as credentials. Plaintext proxy logs may contain them, so keep log captures local and never paste them into issues without reviewing the full contents.
 - The proxy's login lives in its Codex home; deleting `~/.codex-openai-proxy/codex-home` signs the proxy out without touching the Codex CLI's own `~/.codex` session.
 
 ### Temporary Responses Lite override
 
-For the pinned Codex `0.155.1` runtime, proxy startup installs a temporary [model catalog override](https://developers.openai.com/codex/config-reference/#configtoml) in the selected Codex home. It copies `models_cache.json` to `models.no-responses-lite.json`, sets `use_responses_lite` to `false` on every model entry, and removes `tool_mode` from entries using Responses Lite. This makes declared client functions direct Responses tools instead of serialized nested code-mode callbacks. The proxy adds a marked top-level `model_catalog_json` block to `config.toml`; the Responses Lite transformation does not modify the source cache.
-
-At startup, a private app-server requests the current model catalog without starting a model turn. The proxy accepts a nonempty cache from the pinned Codex version, rebuilds the override and restarts app-server before reporting ready. The override replaces any top-level `model_catalog_json` setting in the selected Codex home. If refresh fails, the proxy retains the cached catalog and logs a warning; readiness requires a usable override. The catalog remains fixed for that proxy process. The override permits direct, batched client function calls, while the model chooses which calls to emit.
+For the pinned Codex `0.155.1` runtime, startup installs a temporary model-catalog override so declared client functions remain direct Responses tools instead of nested code-mode callbacks. Startup refreshes the catalog without starting a model turn; on failure it retains the previous usable cache. The catalog stays fixed for the life of that proxy process. See [Codex compatibility](compatibility.md#temporary-model-catalog-override) for implementation and upgrade consequences.
 
 ## Instruction configuration
 
@@ -39,14 +38,6 @@ Personal Codex configuration does not propagate through authentication sync: the
 System messages are excluded from `thread/inject_items` because they are supplied through `baseInstructions`; the pinned runtime filters literal system history out of model requests. Client `developer` messages remain developer history, and other history keeps its content and order. Codex represents its base instructions as developer instructions upstream, so the proxy does not guarantee separate system-over-developer priority. System messages anywhere in a fresh transcript contribute to the thread-wide base instructions.
 
 Native thread reuse retains its base instructions and history. A system message in a continuation transcript does not update that thread's instructions, including after a restart. To change instructions, send the intended transcript as a fresh request without `previous_response_id` or an implicitly continued pending tool-result batch.
-
-The dedicated [system-prompt live test](../test/contract/system-prompt.live.test.ts) checks that a system-only nonce wins over conflicting user input in both aggregate and SSE output, using `gpt-6-luna` with at most two upstream model responses:
-
-```sh
-npm run test:live -- test/contract/system-prompt.live.test.ts
-```
-
-The live budget guard lets a root final answer without tool work finish naturally at the limit, preserving `finish_reason: "stop"`. It interrupts responses that can require more work and rejects further root turns before dispatch.
 
 ## Use an OpenAI client
 
@@ -90,14 +81,12 @@ curl http://127.0.0.1:8787/v1/models
 | Supported                                                                                                | Not supported                                           |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | `POST /v1/chat/completions` with text messages (`system`, `developer`, `user`, `assistant`, `tool`) and inline user images, audio, PDFs, and `x_codex` text/table files | Audio output and uploaded file IDs              |
-| `GET /v1/models` for visible models                                                                      | Responses API, embeddings, Images API, audio API, model changes |
+| `GET /v1/models` for visible models                                                                      | Responses API, embeddings, Images API, audio API, and model retrieval/deletion/mutation endpoints |
 | Streaming (SSE, ends with `data: [DONE]`) and non-streaming                                              |                                                         |
 | `reasoning_effort`, verbosity, and service tier forwarded to app-server                                 | Forced tool selection                                   |
 | Client-defined function tools, `tool_calls`, `finish_reason: "tool_calls"`                               | More than one choice per response                       |
 | Default-on streaming usage chunks (`stream_options.include_usage: false` opts out)                       | Remote (non-loopback) serving                           |
 | OpenAI-shaped JSON errors                                                                                |                                                         |
-
-Model retrieval, deletion, and mutation endpoints are not supported.
 
 Client parameters are accepted by default. Native settings such as `reasoning_effort`, `verbosity`, and `service_tier` are forwarded without a proxy enum; app-server decides whether each name is supported. `service_tier: "auto"` retains the native default and `"fast"` maps to `"priority"`. `response_format: {"type":"json_schema",...}` forwards its schema; `json_object` maps to `{"type":"object"}` and `text` retains ordinary output. Other format types are accepted and ignored with a warning.
 
@@ -141,8 +130,6 @@ standard Chat Completions file parts to PDF.
 
 `GET /v1/models` queries the active authenticated pinned app-server, aggregates every upstream `model/list` page, and returns only visible models. Each `id` is the Codex model slug accepted by the proxy. It starts zero Codex threads or turns. When the temporary Responses Lite override is installed, the response reflects its frozen catalog; otherwise it reflects app-server's ordinary catalog. `created: 0` and `owned_by: "openai"` are synthetic compatibility placeholders because app-server does not provide those fields.
 
-From a repository checkout, `npm run models:live` remains a hidden/full-metadata diagnostic rather than a public route. Add `-- --include-hidden` for hidden entries or `-- --json` for complete catalog metadata; it also starts zero model turns.
-
 ## Streaming
 
 Set `stream: true` as usual:
@@ -172,8 +159,6 @@ Function tools follow the normal multi-request Chat Completions flow:
 4. Send the assistant tool-call message plus matching `role: "tool"` messages — repeating the same `tools`, `reasoning_effort`, and `x_codex` settings as the original request.
 
 When those settings change between the call and its results, the proxy executes the supplied transcript on a fresh Codex thread with the requested settings (`x_codex.threadReused: false`), and the pending call record stays intact for a later matching request. Partial, foreign, or duplicate results against a live pending batch are rejected before any work starts. With no submitted results, an explicit selector starts a fresh thread and leaves the pending batch intact. When your client replays a full transcript across multiple tool rounds, only its terminal contiguous `role: "tool"` block is correlated against the pending batch; earlier completed tool exchanges stay historical context. When you continue a pending tool batch with an explicit `previous_response_id`, the `role: "tool"` result block may be followed by one or more consecutive user messages: the results and every user message reach the same continued turn in order, with the final user message as the turn's input. Partial, foreign, duplicate, or altered results — and a user message splitting a parallel result block — fail with typed errors before any work starts. Resending such a transcript with a new trailing user message and no `previous_response_id` starts a fresh thread, and each earlier tool call is replayed into it paired with the result that answered it. A call no `role: "tool"` message answered and a result no immediately preceding assistant batch requested are dropped, reported once per request as `unpaired_history_tool_items_dropped`. The proxy ends the Codex turn the moment it captures the tool calls, then waits through the usage collection window before returning the `tool_calls` response; your later tool results are delivered into the persisted thread when you continue, but are never re-announced as client tool calls. Pending tool calls are durable — they survive a proxy restart and expire only with the normal continuation retention — but a post-restart continuation with active tools runs on a fresh thread.
-
-When app-server dispatches tool callbacks after their raw response has completed, the proxy retains that completion and waits for one second without another callback before capturing the batch. This avoids a request timeout caused by waiting for an already-consumed completion. The HTTP request deadline still applies; a missing raw completion is never replaced by a timer.
 
 ## Codex-specific extensions
 
@@ -213,7 +198,7 @@ this field likewise appears only on the first chunk.
 
 Completed or in-progress Codex-owned work appears only under response-level
 `x_codex.activity`. Its `calls` array identifies commands, file changes, MCP
-calls, web searches, collaboration calls, and future app-server activity; its
+calls, web searches, collaboration calls, and future explicitly supported activity; its
 `results` array carries their correlated status and output. Aggregate responses
 collect the activity once. Streaming responses emit extension-only chunks with
 `choices: []` and the activity delta under `x_codex.activity`.
@@ -254,18 +239,14 @@ Per-request Codex controls live under a nonstandard top-level `x_codex` object:
 | Field        | Values                                                           | Default                 | Notes                                                                             |
 | ------------ | ---------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- |
 | `cwd`        | absolute path                                                    | the configured `--root` | Must be the root or a descendant; symlink escapes and relative paths are rejected |
-| `sandbox`    | `disabled`, `read-only`, `workspace-write`, `danger-full-access` | `disabled`              | `disabled` removes the built-in shell and local file access; client tools remain  |
+| `sandbox`    | `disabled`, `read-only`, `workspace-write`, `danger-full-access` | `disabled`              | `disabled` removes built-in execution environments                                |
 | `web_search` | `disabled`, `cached`, `indexed`, `live`                          | `disabled`              | Applied per Codex thread                                                          |
 
-The `disabled` sandbox provides no built-in shell or local filesystem reads or writes through an execution environment. The proxy realizes it as Codex's native `read-only` sandbox plus `environments: []`, so managed policy requirements must allow `read-only` for a request to use `disabled`. Client-provided tools and hosted web search, when explicitly enabled, remain separate capabilities.
-
-The local compatibility profile defaults to `disabled` when a client declares tools. The operator can opt into built-in tools alongside those client tools with `--local-host-tools true`, which requires `--local-bridge-model` and defaults such requests to `danger-full-access`. The `x_codex.sandbox` request field still takes precedence, and managed requirements still constrain it. Native host paths require a native proxy process with a suitable `--root`; Docker access remains limited to mounts. This can expose any file readable by the proxy's host account to an authenticated client.
+The `disabled` sandbox provides no built-in shell or local filesystem reads or writes through an execution environment. The proxy realizes it as Codex's native `read-only` sandbox plus `environments: []`, so managed policy requirements must allow `read-only` for a request to use `disabled`. Hosted web search remains a separate capability selected by `x_codex.web_search`.
 
 On native Windows, the proxy defaults an unconfigured sandbox backend to `windows.sandbox = "unelevated"`, which does not require administrator setup. Explicit Windows sandbox settings and managed requirements take precedence. This backend selection is separate from `x_codex.sandbox`: requests must still opt into `read-only` or `workspace-write` for built-in filesystem access. The unelevated backend uses a restricted token and provides weaker isolation than the elevated backend; operators who have configured elevated sandboxing retain it. The isolated live-test Codex home uses the same default.
 
 Multi-agent availability is app-server process configuration, not a Chat Completions request policy. The proxy starts app-server with subagents disabled unless the operator passes `--subagents true`; the startup log records the effective value as `subagents_enabled`. The proxy exposes no per-request `x_codex` multi-agent field, so enabling `read-only`, `workspace-write`, or web search does not itself enable child spawning.
-
-The opt-in `gpt-6-luna` live child-agent contract explicitly instructs one spawn, then verifies the child completion and nonce handoff. It runs in a separate app-server process with subagents enabled and shares the core contract's 32-response ceiling.
 
 The JSON Schema ships with the package at `protocol/schemas/x-codex.schema.json`.
 
@@ -287,7 +268,7 @@ Only app-server `codexErrorInfo: "usageLimitExceeded"` becomes HTTP 429 with `er
 
 For each such failed request, the proxy makes at most one memoized, abortable `account/rateLimits/read`. When it finds a trustworthy future reset, nonstandard `error.x_codex.reset_at` is Unix seconds; an uncommitted response also has the matching integer-seconds `Retry-After` header. A failed or malformed lookup omits both reset values but preserves the typed 429. Client cancellation remains cancellation.
 
-Explicit workspace credit exhaustion always uses `insufficient_credits` with no reset. An explicit workspace usage cap uses `workspace_usage_limit_exceeded` only without a trustworthy individual spend-control reset; when `spendControlReached` and a valid future `individualLimit` reset exist, it remains `usage_limit_exceeded` with reset metadata. Vox Agents treats both workspace codes as non-retryable. The reset is the latest future exhausted primary or secondary window from `rateLimitsByLimitId.codex`, falling back to `rateLimits`; `individualLimit` participates only when `spendControlReached`. The proxy uses stale-percent data only for `rate_limit_reached` and never infers a workspace reset from rolling windows. It never sleeps, queues, consumes reset credit, retries, or replays a request.
+Explicit workspace credit exhaustion always uses `insufficient_credits` with no reset. An explicit workspace usage cap uses `workspace_usage_limit_exceeded` only without a trustworthy individual spend-control reset; when `spendControlReached` and a valid future `individualLimit` reset exist, it remains `usage_limit_exceeded` with reset metadata. The reset is the latest future exhausted primary or secondary window from `rateLimitsByLimitId.codex`, falling back to `rateLimits`; `individualLimit` participates only when `spendControlReached`. The proxy uses stale-percent data only for `rate_limit_reached` and never infers a workspace reset from rolling windows. It never sleeps, queues, consumes reset credit, retries, or replays a request.
 
 ## Capacity errors
 
@@ -296,7 +277,7 @@ App-server `codexErrorInfo: "serverOverloaded"` — the failure behind Codex's "
 ## Safety and limits
 
 - The listener accepts loopback only (`127.0.0.1`, `::1`, `localhost`); non-loopback `Host` authorities and any request with an `Origin` header are rejected.
-- The local bridge profile requires a client bearer key on every model API route, including health checks. The agent-service profile and bare CLI accept requests without a key. A managed key in the agent-service profile provides usage attribution, not access control. See the [security model](security.md).
+- The local bridge profile requires a client bearer key on every model API route, including health checks. The agent-service profile and bare CLI accept requests without a key. A managed key in the agent-service profile provides usage attribution, not access control. See the [security model](../reference/security.md).
 - Structured JSON logs go to stderr in plaintext and are not redacted. Any level may contain filesystem paths, login URLs, tokens, prompts, child stderr, or tool details; treat every log capture as sensitive.
 - Successful `/health` and `/ready` probes — including the 503 returned before startup finishes — are logged at debug so a polling health checker stays out of default-level output. Rejected or failed requests to those paths are still logged at info.
 

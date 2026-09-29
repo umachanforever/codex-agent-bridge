@@ -1,6 +1,6 @@
 # Proxy architecture
 
-This page is for contributors changing the proxy's runtime behavior. The [README](../README.md) defines the public Chat Completions contract; [continuation](continuation.md) explains response IDs, tool results, and thread reuse in detail.
+This page is for contributors changing the proxy's runtime behavior. The [README](../../README.md) defines the public Chat Completions contract; [continuation](continuation.md) explains response IDs, tool results, and thread reuse in detail.
 
 ## Request and process flow
 
@@ -44,7 +44,7 @@ keys and a separate browser-authenticated loopback listener. The CLI owns its li
 HTTP admission resolves a key identity; normalized model/usage metadata is observed
 without intercepting or reparsing response bodies. One terminal record is persisted per
 request ID. Browser management auth is never accepted as model API authorization.
-See [management](admin.md) for security, retention and authentication reuse details.
+See [management](../en/admin.md) for security, retention and authentication reuse details.
 
 ## Startup ownership
 
@@ -62,7 +62,7 @@ All Codex-owned lifecycle events are response-level `x_codex.activity`, separate
 
 ## Policy boundary
 
-The listener binds only to a validated loopback address and rejects non-loopback `Host` values and requests carrying `Origin`. A request's `x_codex` controls are constrained by the configured canonical root and app-server managed requirements. The proxy rejects a requested policy it cannot apply faithfully; it never relaxes a stricter requirement. The default `disabled` sandbox removes execution environments; built-in filesystem access and hosted web search require explicit allowed selections. Client-defined tools remain available. Child-agent spawning is a separate process-wide `--subagents` opt-in, independent of per-request policy.
+The listener binds only to a validated loopback address and rejects non-loopback `Host` values and requests carrying `Origin`. A request's `x_codex` controls are constrained by the configured canonical root and app-server managed requirements. The proxy rejects a requested policy it cannot apply faithfully; it never relaxes a stricter requirement. The default `disabled` sandbox removes execution environments; built-in filesystem access and hosted web search require explicit allowed selections. Child-agent spawning is a separate process-wide `--subagents` opt-in, independent of per-request policy.
 
 Inline user audio maps to app-server `UserInput.audio` data URLs. App-server
 rejects raw `input_file` history and has no file `UserInput` variant, so the

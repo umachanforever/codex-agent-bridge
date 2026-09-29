@@ -17,7 +17,7 @@ labels: bug
 ## Minimal reproduction
 
 Use synthetic messages. Remove keys, login URLs, personal paths and transcripts.
-Do not attach production logs. Security issues: follow SECURITY.md instead.
+Do not attach production logs. Security issues: follow `docs/en/security.md` instead.
 
 ## Error code and checks already performed
 
