@@ -43,7 +43,16 @@ interface CompletionUsage {
 /** Minimal parsed Chat Completions response used by the acceptance tests. */
 interface CompletionBody {
   id: string;
-  x_codex?: { threadReused?: boolean };
+  x_codex?: {
+    threadReused?: boolean;
+    activity?: {
+      calls?: Array<{
+        id: string;
+        function: { name: string; arguments: string };
+      }>;
+      results?: Array<Record<string, unknown>>;
+    };
+  };
   usage?: CompletionUsage;
   choices: Array<{
     finish_reason: string;
@@ -828,8 +837,9 @@ test("parallel fragmented tool calls interrupt the turn and continue by injectin
       // Client-owned outputs are injected into the Codex thread only. They
       // must not be re-announced as observational provider tool results.
       assert.equal(continued.choices[0]!.message.tool_results, undefined);
+      assert.equal(continued.choices[0]!.message.tool_calls, undefined);
       assert.deepEqual(
-        continued.choices[0]!.message.tool_calls?.map((call) => call.id),
+        continued.x_codex?.activity?.calls?.map((call) => call.id),
         ["internal_after_results"],
       );
       // The turn was interrupted at the batch, which cancels both its captured
@@ -1463,7 +1473,7 @@ test("replayed internal activity stays out of fresh-thread history", async () =>
   ]);
 });
 
-test("verbatim mixed internal and dynamic calls resolve only the pending batch", async () => {
+test("separates internal activity from the pending dynamic batch", async () => {
   await withTempDir(async (directory) => {
     const fake = new ToolAppServer(true, false, undefined, true);
     const { origin, proxy } = await startProxy(directory, fake);
@@ -1482,7 +1492,11 @@ test("verbatim mixed internal and dynamic calls resolve only the pending batch",
       const calls = initial.choices[0]!.message.tool_calls!;
       assert.deepEqual(
         calls.map((call) => call.id),
-        ["internal_before_tools", "call_b", "call_a"],
+        ["call_b", "call_a"],
+      );
+      assert.deepEqual(
+        initial.x_codex?.activity?.calls?.map((call) => call.id),
+        ["internal_before_tools"],
       );
 
       const continued = await postChatCompletion(origin, {
@@ -1504,8 +1518,8 @@ test("verbatim mixed internal and dynamic calls resolve only the pending batch",
         ],
       });
       assert.equal(continued.status, 200, await continued.clone().text());
-      // Only the pending dynamic batch is injected; the observational internal
-      // call in the replayed assistant message never reaches thread history.
+      // Only the pending dynamic batch appears in the assistant transcript and
+      // reaches thread history; completed Codex activity stays in x_codex.
       assert.deepEqual(
         fake.injected.map((item) => [item.type, item.call_id]),
         [

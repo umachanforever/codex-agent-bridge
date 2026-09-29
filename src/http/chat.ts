@@ -100,6 +100,7 @@ async function streamChatResponse(
     committed = true;
   };
   let streamFailed = false;
+  let sawClientToolCalls = false;
   try {
     for await (const event of events) {
       // The first event precedes SSE commitment so a turn that fails before any
@@ -115,16 +116,33 @@ async function streamChatResponse(
         streamFailed = true;
         break;
       }
-      if (event.delta)
+      if (event.delta) {
+        if (event.delta.tool_calls?.length) sawClientToolCalls = true;
         await writeSse(
           response,
           chunk(responseId, created, request.model, event.delta, null),
         );
-      if (event.finishReason)
+      }
+      if (event.activity)
+        await writeSse(response, {
+          id: responseId,
+          object: "chat.completion.chunk",
+          created,
+          model: request.model,
+          choices: [],
+          x_codex: { activity: event.activity },
+        });
+      if (event.finishReason) {
+        const finishReason = sawClientToolCalls
+          ? "tool_calls"
+          : event.finishReason === "tool_calls"
+            ? "stop"
+            : event.finishReason;
         await writeSse(
           response,
-          chunk(responseId, created, request.model, {}, event.finishReason),
+          chunk(responseId, created, request.model, {}, finishReason),
         );
+      }
       if (event.usage && request.includeUsage)
         await writeSse(response, {
           id: responseId,
@@ -168,7 +186,14 @@ async function writeAggregateResponse(
   threadReused: boolean,
 ): Promise<void> {
   const aggregated = await aggregateNormalizedEvents(events);
-  const { content, reasoning, toolResults, finishReason, usage } = aggregated;
+  const {
+    content,
+    reasoning,
+    activityCalls,
+    activityResults,
+    finishReason,
+    usage,
+  } = aggregated;
   const message: Record<string, unknown> = {
     role: "assistant",
     content: aggregated.toolCalls.length && content === "" ? null : content,
@@ -181,13 +206,31 @@ async function writeAggregateResponse(
       function: call.function,
     }));
   }
-  if (toolResults.length) message.tool_results = toolResults;
+  const activity =
+    activityCalls.length || activityResults.length
+      ? {
+          ...(activityCalls.length
+            ? {
+                calls: activityCalls.map((call) => ({
+                  id: call.id,
+                  type: call.type,
+                  function: call.function,
+                })),
+              }
+            : {}),
+          ...(activityResults.length ? { results: activityResults } : {}),
+        }
+      : undefined;
   writeJson(response, 200, {
     id: responseId,
     object: "chat.completion",
     created,
     model: request.model,
-    x_codex: { instructionSources, threadReused },
+    x_codex: {
+      instructionSources,
+      threadReused,
+      ...(activity ? { activity } : {}),
+    },
     choices: [{ index: 0, message, finish_reason: finishReason ?? "stop" }],
     ...(usage ? { usage } : {}),
   });

@@ -58,7 +58,7 @@ The public routes are `/health`, `/ready`, `GET /v1/models`, and `POST /v1/chat/
 
 For streaming, setup and the first event are processed before SSE headers are committed so early failures retain their HTTP error status. After headers are sent, failures are emitted inside the stream. Output writes honor backpressure; request cancellation and deadlines release the active turn and its transport work. [Continuation](continuation.md) describes how client-defined tool batches end a turn and resume through later HTTP requests.
 
-Child-agent lifecycle events are observational `x_codex` tool activity. The pinned app-server may report a start as `subAgentActivity` rather than `spawnAgent`; the normalizer preserves the recognized activity kind and child thread ID in arguments and result content, while omitting agent paths. This preserves correlation without making child activity a client-executable function call.
+All Codex-owned lifecycle events are response-level `x_codex.activity`, separate from standard client-executable `tool_calls`. The classification follows execution ownership rather than model, client, or tool name, so future app-server activity cannot accidentally suspend a Chat Completions client. The pinned app-server may report a child start as `subAgentActivity` rather than `spawnAgent`; the normalizer preserves the recognized activity kind and child thread ID in arguments and result content, while omitting agent paths.
 
 ## Policy boundary
 

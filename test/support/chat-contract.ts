@@ -903,8 +903,8 @@ export function registerChatContract(
         // as observational activity the proxy faithfully exposes. The
         // disabled-sandbox claim is non-execution and non-disclosure, never
         // non-attempt, so only a successful execution or a token leak fails.
-        const observedCalls = choice?.message?.tool_calls ?? [];
-        const observedResults = choice?.message?.tool_results ?? [];
+        const observedCalls = body.x_codex?.activity?.calls ?? [];
+        const observedResults = body.x_codex?.activity?.results ?? [];
         assert.ok(
           observedResults.every((result) =>
             observedCalls.some((call) => call.id === result.id),
@@ -959,10 +959,10 @@ export function registerChatContract(
         assert.equal(response.status, 200, diagnostic(raw));
         const chunks = parseSse(raw);
         const calls = chunks.flatMap(
-          (chunk) => chunk.choices?.[0]?.delta?.tool_calls ?? [],
+          (chunk) => chunk.x_codex?.activity?.calls ?? [],
         );
         const results = chunks.flatMap(
-          (chunk) => chunk.choices?.[0]?.delta?.tool_results ?? [],
+          (chunk) => chunk.x_codex?.activity?.results ?? [],
         );
         const uniqueCalls = [
           ...new Map(calls.map((call) => [call.id, call])).values(),
@@ -1158,8 +1158,8 @@ export function registerChatContract(
           const body = parseToolCompletion(raw, "filesystem tools");
           const choice = body.choices?.[0];
           assert.equal(choice?.finish_reason, "stop");
-          const calls = [...(choice?.message?.tool_calls ?? [])];
-          const results = [...(choice?.message?.tool_results ?? [])];
+          const calls = [...(body.x_codex?.activity?.calls ?? [])];
+          const results = [...(body.x_codex?.activity?.results ?? [])];
           const assistantContents = [choice?.message?.content ?? ""];
           if (!calls.some((call) => call.function.name === "fileChange")) {
             assert.match(body.id ?? "", /^chatcmpl_codex_/);
@@ -1189,13 +1189,14 @@ export function registerChatContract(
               scenarioStarted,
             );
             assert.equal(correction.status, 200, diagnostic(correctionRaw));
-            const correctionChoice = parseToolCompletion(
+            const correctionBody = parseToolCompletion(
               correctionRaw,
               "filesystem write correction",
-            ).choices?.[0];
+            );
+            const correctionChoice = correctionBody.choices?.[0];
             assert.equal(correctionChoice?.finish_reason, "stop");
-            calls.push(...(correctionChoice?.message?.tool_calls ?? []));
-            results.push(...(correctionChoice?.message?.tool_results ?? []));
+            calls.push(...(correctionBody.x_codex?.activity?.calls ?? []));
+            results.push(...(correctionBody.x_codex?.activity?.results ?? []));
             assistantContents.push(correctionChoice?.message?.content ?? "");
           } else {
             logLiveFilesystemTiming(
@@ -1292,10 +1293,11 @@ export function registerChatContract(
         });
         const raw = await response.text();
         assert.equal(response.status, 200, diagnostic(raw));
-        const choice = parseToolCompletion(raw, "live web search").choices?.[0];
+        const body = parseToolCompletion(raw, "live web search");
+        const choice = body.choices?.[0];
         assert.equal(choice?.finish_reason, "stop");
-        const calls = choice?.message?.tool_calls ?? [];
-        const results = choice?.message?.tool_results ?? [];
+        const calls = body.x_codex?.activity?.calls ?? [];
+        const results = body.x_codex?.activity?.results ?? [];
         const searches = calls.filter(
           (call) => call.function.name === "webSearch",
         );
@@ -1358,15 +1360,16 @@ export function registerChatContract(
         });
         const raw = await response.text();
         assert.equal(response.status, 200, diagnostic(raw));
-        const choice = parseToolCompletion(raw, "spawned child").choices?.[0];
+        const body = parseToolCompletion(raw, "spawned child");
+        const choice = body.choices?.[0];
         assert.equal(choice?.finish_reason, "stop");
         const parentContent = choice?.message?.content?.trim();
         assert.ok(
           parentContent?.endsWith(backend!.observationToken),
           "parent response did not end with the exact child nonce",
         );
-        const calls = choice?.message?.tool_calls ?? [];
-        const results = choice?.message?.tool_results ?? [];
+        const calls = body.x_codex?.activity?.calls ?? [];
+        const results = body.x_codex?.activity?.results ?? [];
         const spawns = calls.filter(
           (call) =>
             call.function.name === "spawnAgent" ||
@@ -1575,10 +1578,33 @@ interface Usage {
   completion_tokens_details?: { reasoning_tokens?: number };
 }
 
+/** One function-shaped Codex-owned activity call exposed under x_codex. */
+interface ActivityCall {
+  id: string;
+  type?: string;
+  function: { name: string; arguments: string };
+}
+
+/** One correlated Codex-owned activity result exposed under x_codex. */
+interface ActivityResult {
+  id: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+  result?: {
+    status?: string;
+    content?: unknown;
+    exit_code?: unknown;
+  };
+}
+
 /** Streaming response subset asserted by the shared contract. */
 interface StreamChunk {
   id?: string;
-  x_codex?: { instructionSources?: string[]; threadReused?: boolean };
+  x_codex?: {
+    instructionSources?: string[];
+    threadReused?: boolean;
+    activity?: { calls?: ActivityCall[]; results?: ActivityResult[] };
+  };
   choices?: Array<{
     delta?: {
       role?: string;
@@ -1621,7 +1647,11 @@ function parseSse(value: string): StreamChunk[] {
 /** Aggregate response subset used by the shared function-tool scenario. */
 interface ToolCompletion {
   id?: string;
-  x_codex?: { instructionSources?: string[]; threadReused?: boolean };
+  x_codex?: {
+    instructionSources?: string[];
+    threadReused?: boolean;
+    activity?: { calls?: ActivityCall[]; results?: ActivityResult[] };
+  };
   choices?: Array<{
     finish_reason?: string | null;
     message?: {

@@ -66,7 +66,12 @@ export interface NormalizedDelta {
   content?: string;
   reasoning?: string;
   tool_calls?: NormalizedToolCall[];
-  tool_results?: NormalizedToolResult[];
+}
+
+/** Codex-owned activity that is informative but never client-executable. */
+export interface NormalizedActivity {
+  calls?: NormalizedToolCall[];
+  results?: NormalizedToolResult[];
 }
 
 /** Structured public subset of an app-server tool error. */
@@ -78,6 +83,7 @@ export interface NormalizedError {
 /** One normalized delta shared by streaming and aggregate output. */
 export interface NormalizedEvent {
   delta?: NormalizedDelta;
+  activity?: NormalizedActivity;
   finishReason?: "stop" | "length" | "tool_calls" | "content_filter";
   usage?: Usage;
   terminalError?: HttpError;
@@ -88,7 +94,8 @@ export interface AggregatedNormalizedEvents {
   content: string;
   reasoning: string;
   toolCalls: NormalizedToolCall[];
-  toolResults: NormalizedToolResult[];
+  activityCalls: NormalizedToolCall[];
+  activityResults: NormalizedToolResult[];
   finishReason: string | null;
   usage?: Usage;
 }
@@ -154,7 +161,8 @@ export async function aggregateNormalizedEvents(
   let content = "";
   let reasoning = "";
   const toolCalls = new Map<number, NormalizedToolCall>();
-  const toolResults: NormalizedToolResult[] = [];
+  const activityCalls = new Map<number, NormalizedToolCall>();
+  const activityResults: NormalizedToolResult[] = [];
   let finishReason: string | null = null;
   let usage: Usage | undefined;
   for await (const event of events) {
@@ -165,18 +173,31 @@ export async function aggregateNormalizedEvents(
       reasoning += event.delta.reasoning;
     for (const call of event.delta?.tool_calls ?? [])
       toolCalls.set(call.index, call);
-    toolResults.push(...(event.delta?.tool_results ?? []));
+    for (const call of event.activity?.calls ?? [])
+      activityCalls.set(call.index, call);
+    activityResults.push(...(event.activity?.results ?? []));
     if (event.finishReason) finishReason = event.finishReason;
     if (event.usage) usage = event.usage;
   }
+  const orderedToolCalls = [...toolCalls.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, call]) => call);
+  // The standard finish reason describes work owed by the client, never
+  // already-completed Codex activity or a contradictory upstream signal.
+  const clientFinishReason = orderedToolCalls.length
+    ? "tool_calls"
+    : finishReason === "tool_calls"
+      ? "stop"
+      : finishReason;
   return {
     content,
     reasoning,
-    toolCalls: [...toolCalls.entries()]
+    toolCalls: orderedToolCalls,
+    activityCalls: [...activityCalls.entries()]
       .sort(([left], [right]) => left - right)
       .map(([, call]) => call),
-    toolResults,
-    finishReason,
+    activityResults,
+    finishReason: clientFinishReason,
     ...(usage ? { usage } : {}),
   };
 }
@@ -184,10 +205,12 @@ export async function aggregateNormalizedEvents(
 /** Maintains stable item-to-choice indexes while normalizing interleaved events. */
 export class EventNormalizer {
   readonly #agentText: AgentText;
-  readonly #toolCalls = new Map<string, NormalizedToolCall>();
+  readonly #activityCalls = new Map<string, NormalizedToolCall>();
+  readonly #clientToolCalls = new Map<string, NormalizedToolCall>();
   readonly #reasoningSummaries = new Map<string, string>();
   readonly #reasoningContent = new Map<string, string>();
-  #nextToolIndex = 0;
+  #nextActivityIndex = 0;
+  #nextClientToolIndex = 0;
   #sawClientTool = false;
   readonly #usageBaseline: TokenUsageCounters | undefined;
   readonly #diagnostics: NormalizerDiagnostics | undefined;
@@ -232,7 +255,7 @@ export class EventNormalizer {
    */
   dynamicToolCall(call: StoredToolCall): NormalizedEvent {
     this.#sawClientTool = true;
-    const publicCall = this.#allocateToolCall(
+    const publicCall = this.#allocateClientToolCall(
       call.callId,
       call.name,
       call.arguments,
@@ -413,20 +436,20 @@ export class EventNormalizer {
     item: Record<string, unknown>,
   ): NormalizedEvent {
     const id = String(item.id);
-    const existing = this.#toolCalls.get(id);
+    const existing = this.#activityCalls.get(id);
     let call = existing;
     if (!call) {
       const shape = internalToolShape(item);
-      call = this.#allocateToolCall(id, shape.name, shape.arguments);
+      call = this.#allocateActivityCall(id, shape.name, shape.arguments);
     }
     if (lifecycle === "started")
-      return existing ? {} : { delta: { tool_calls: [call] } };
+      return existing ? {} : { activity: { calls: [call] } };
     return {
-      delta: {
+      activity: {
         // Streaming clients concatenate function arguments by call index, so a
         // previously announced call must not repeat its complete arguments.
-        ...(!existing ? { tool_calls: [call] } : {}),
-        tool_results: [internalToolResult(item, call)],
+        ...(!existing ? { calls: [call] } : {}),
+        results: [internalToolResult(item, call)],
       },
     };
   }
@@ -437,39 +460,57 @@ export class EventNormalizer {
     params: Record<string, unknown>,
   ): NormalizedEvent {
     const id = String(params.itemId);
-    const existing = this.#toolCalls.get(id);
+    const existing = this.#activityCalls.get(id);
     const call =
       existing ??
-      this.#allocateToolCall(
+      this.#allocateActivityCall(
         id,
         safeToolName(method.slice("item/".length)),
         "{}",
       );
     return {
-      delta: {
+      activity: {
         // Orphan progress still introduces a reconstructable call, while later
-        // progress carries only the nonstandard self-correlating result.
-        ...(!existing ? { tool_calls: [call] } : {}),
-        tool_results: [progressToolResult(method, params, call)],
+        // progress carries only the self-correlating activity result.
+        ...(!existing ? { calls: [call] } : {}),
+        results: [progressToolResult(method, params, call)],
       },
     };
   }
 
-  /** Allocates one monotonically increasing index for each call or item ID. */
-  #allocateToolCall(
+  /** Allocates one standard index for each unresolved client function call. */
+  #allocateClientToolCall(
     id: string,
     name: string,
     argumentsJson: string,
   ): NormalizedToolCall {
-    const existing = this.#toolCalls.get(id);
+    const existing = this.#clientToolCalls.get(id);
     if (existing) return existing;
     const call: NormalizedToolCall = {
-      index: this.#nextToolIndex++,
+      index: this.#nextClientToolIndex++,
       id,
       type: "function",
       function: { name: safeToolName(name), arguments: argumentsJson },
     };
-    this.#toolCalls.set(id, call);
+    this.#clientToolCalls.set(id, call);
+    return call;
+  }
+
+  /** Allocates one extension-local index for each Codex-owned activity item. */
+  #allocateActivityCall(
+    id: string,
+    name: string,
+    argumentsJson: string,
+  ): NormalizedToolCall {
+    const existing = this.#activityCalls.get(id);
+    if (existing) return existing;
+    const call: NormalizedToolCall = {
+      index: this.#nextActivityIndex++,
+      id,
+      type: "function",
+      function: { name: safeToolName(name), arguments: argumentsJson },
+    };
+    this.#activityCalls.set(id, call);
     return call;
   }
 }

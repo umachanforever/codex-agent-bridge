@@ -171,7 +171,7 @@ Function tools follow the normal multi-request Chat Completions flow:
 3. Execute the functions in your client.
 4. Send the assistant tool-call message plus matching `role: "tool"` messages — repeating the same `tools`, `reasoning_effort`, and `x_codex` settings as the original request.
 
-When those settings change between the call and its results, the proxy executes the supplied transcript on a fresh Codex thread with the requested settings (`x_codex.threadReused: false`), and the pending call record stays intact for a later matching request. Partial, foreign, or duplicate results against a live pending batch are rejected before any work starts. With no submitted results, an explicit selector starts a fresh thread and leaves the pending batch intact. When your client replays a full transcript across multiple tool rounds, only its terminal contiguous `role: "tool"` block is correlated against the pending batch; earlier completed tool exchanges stay historical context. When you continue a pending tool batch with an explicit `previous_response_id`, the `role: "tool"` result block may be followed by one or more consecutive user messages: the results and every user message reach the same continued turn in order, with the final user message as the turn's input. Partial, foreign, duplicate, or altered results — and a user message splitting a parallel result block — fail with typed errors before any work starts. Resending such a transcript with a new trailing user message and no `previous_response_id` starts a fresh thread, and each earlier tool call is replayed into it paired with the result that answered it. A call no `role: "tool"` message answered and a result no immediately preceding assistant batch requested are dropped, reported once per request as `unpaired_history_tool_items_dropped`. Observational Codex activity is also omitted because it belongs to the original thread, but is recognized rather than reported as unpaired client history. The proxy ends the Codex turn the moment it captures the tool calls, then waits through the usage collection window before returning the `tool_calls` response; your later tool results are delivered into the persisted thread when you continue, but are never echoed back in response `tool_calls` or `tool_results`. Pending tool calls are durable — they survive a proxy restart and expire only with the normal continuation retention — but a post-restart continuation with active tools runs on a fresh thread.
+When those settings change between the call and its results, the proxy executes the supplied transcript on a fresh Codex thread with the requested settings (`x_codex.threadReused: false`), and the pending call record stays intact for a later matching request. Partial, foreign, or duplicate results against a live pending batch are rejected before any work starts. With no submitted results, an explicit selector starts a fresh thread and leaves the pending batch intact. When your client replays a full transcript across multiple tool rounds, only its terminal contiguous `role: "tool"` block is correlated against the pending batch; earlier completed tool exchanges stay historical context. When you continue a pending tool batch with an explicit `previous_response_id`, the `role: "tool"` result block may be followed by one or more consecutive user messages: the results and every user message reach the same continued turn in order, with the final user message as the turn's input. Partial, foreign, duplicate, or altered results — and a user message splitting a parallel result block — fail with typed errors before any work starts. Resending such a transcript with a new trailing user message and no `previous_response_id` starts a fresh thread, and each earlier tool call is replayed into it paired with the result that answered it. A call no `role: "tool"` message answered and a result no immediately preceding assistant batch requested are dropped, reported once per request as `unpaired_history_tool_items_dropped`. The proxy ends the Codex turn the moment it captures the tool calls, then waits through the usage collection window before returning the `tool_calls` response; your later tool results are delivered into the persisted thread when you continue, but are never re-announced as client tool calls. Pending tool calls are durable — they survive a proxy restart and expire only with the normal continuation retention — but a post-restart continuation with active tools runs on a fresh thread.
 
 When app-server dispatches tool callbacks after their raw response has completed, the proxy retains that completion and waits for one second without another callback before capturing the batch. This avoids a request timeout caused by waiting for an already-consumed completion. The HTTP request deadline still applies; a missing raw completion is never replaced by a timer.
 
@@ -200,14 +200,8 @@ Pass a completed response's `id` as top-level `previous_response_id` to prefer c
 
 ### Receive Codex activity
 
-Responses can include two nonstandard fields on the assistant delta/message:
-
-| Field          | Contents                                                                                                           |
-| -------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `reasoning`    | Codex's reasoning summary (string)                                                                                 |
-| `tool_results` | Status/results of Codex's internal activity (commands, file changes, MCP calls, web searches, collaboration calls) |
-
-Successful responses also include response-level
+Assistant deltas/messages can include the nonstandard `reasoning` string with
+Codex's reasoning summary. Successful responses also include response-level
 `x_codex.instructionSources`, an array of the environment-native instruction-file
 paths app-server reports as loaded for the Codex thread. Aggregate responses
 include it once; streaming responses include it on the first chunk. An empty
@@ -217,18 +211,29 @@ as sensitive plaintext. The same response-level object includes
 existing Codex thread, while `false` means it started a new thread. For streams,
 this field likewise appears only on the first chunk.
 
+Completed or in-progress Codex-owned work appears only under response-level
+`x_codex.activity`. Its `calls` array identifies commands, file changes, MCP
+calls, web searches, collaboration calls, and future app-server activity; its
+`results` array carries their correlated status and output. Aggregate responses
+collect the activity once. Streaming responses emit extension-only chunks with
+`choices: []` and the activity delta under `x_codex.activity`.
+
 Reasoning deltas stream as they arrive. If app-server supplies reasoning only in
 the completed item, the proxy emits that final text without repeating any
 prefix already streamed for the same item.
 
-Internal activity also appears as function-shaped entries in `tool_calls`. These are **observational** — Codex already executed them. Do not execute them, and do not send tool results for them; they never cause `finish_reason: "tool_calls"`. Only your own client-defined functions suspend the turn and require `role: "tool"` follow-ups.
+Standard `tool_calls` are reserved for unresolved functions declared by the
+client. Every nonempty standard `tool_calls` response therefore ends with
+`finish_reason: "tool_calls"`; a response ending with `finish_reason: "stop"`
+does not contain standard tool calls. Codex-owned activity never requires a
+`role: "tool"` follow-up.
 
-For collaboration calls, `tool_results[].result.content` can include sanitized `receiverThreadIds` and `agentsStates` entries containing only child status and message fields. Sender thread IDs and provider-native payloads are not exposed.
+For collaboration calls, `x_codex.activity.results[].result.content` can include sanitized `receiverThreadIds` and `agentsStates` entries containing only child status and message fields. Sender thread IDs and provider-native payloads are not exposed.
 Child lifecycle notifications appear as `subAgentActivity` in the same nonstandard activity fields, with `kind` and `agentThreadId` in function arguments and result content. Agent paths are omitted; app-server may report a child start this way instead of a `spawnAgent` call.
 
-For `webSearch`, app-server may emit an incomplete start item. The proxy withholds that placeholder and uses the completed item's `query` and `action` as the observational call input. Search results, when app-server supplies them, are exposed as `tool_results[].result.content`; the action metadata is not misclassified as output.
+For `webSearch`, app-server may emit an incomplete start item. The proxy withholds that placeholder and uses the completed item's `query` and `action` as the activity call input. Search results, when app-server supplies them, are exposed as `x_codex.activity.results[].result.content`; the action metadata is not misclassified as output.
 
-If your client replays a prior assistant message verbatim in a fresh request, the proxy strips these observational fields automatically. Assistant messages may also carry `reasoning_content`, the field OpenAI-compatible clients such as the Vercel AI SDK write instead of `reasoning`; it is accepted and stripped the same way. Either field is response-only — sending it on a non-assistant message, or as anything other than a string, is rejected.
+Assistant messages may also carry `reasoning_content`, the field OpenAI-compatible clients such as the Vercel AI SDK write instead of `reasoning`; it is accepted and stripped the same way. Either field is response-only — sending it on a non-assistant message, or as anything other than a string, is rejected.
 
 ### Select Codex policy
 

@@ -162,7 +162,10 @@ test("property: response aggregation preserves order and sorts tool indexes", as
           aggregate.toolCalls.map((call) => call.index),
           [...indexes].sort((left, right) => left - right),
         );
-        assert.equal(aggregate.finishReason, "stop");
+        assert.equal(
+          aggregate.finishReason,
+          indexes.length ? "tool_calls" : "stop",
+        );
       },
     ),
     propertyOptions,

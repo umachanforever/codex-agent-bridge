@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import {
+  aggregateNormalizedEvents,
   EventNormalizer,
   HANDLED_NOTIFICATION_METHODS,
   type Usage,
@@ -1038,10 +1039,10 @@ test("normalizes interleaved text, reasoning, internal items, tools, usage, and 
   const commandCall = normalizer.normalize(
     commandStarted.method,
     commandStarted.params,
-  )[0]?.delta?.tool_calls;
+  )[0]?.activity?.calls;
   assert.deepEqual(commandCall, [
     {
-      index: 2,
+      index: 0,
       id: "command",
       type: "function",
       function: { name: "commandExecution", arguments: '{"command":"pwd"}' },
@@ -1059,9 +1060,9 @@ test("normalizes interleaved text, reasoning, internal items, tools, usage, and 
   const progress = normalizer.normalize(
     commandOutput.method,
     commandOutput.params,
-  )[0]?.delta;
-  assert.equal(progress?.tool_calls, undefined);
-  assert.deepEqual(progress?.tool_results, [
+  )[0]?.activity;
+  assert.equal(progress?.calls, undefined);
+  assert.deepEqual(progress?.results, [
     {
       id: "command",
       type: "function",
@@ -1073,7 +1074,7 @@ test("normalizes interleaved text, reasoning, internal items, tools, usage, and 
       },
     },
   ]);
-  const streamedArguments = [commandCall, progress?.tool_calls]
+  const streamedArguments = [commandCall, progress?.calls]
     .flatMap((calls) => calls ?? [])
     .map(
       (call) =>
@@ -1107,10 +1108,10 @@ test("normalizes interleaved text, reasoning, internal items, tools, usage, and 
   const terminalCommand = normalizer.normalize(
     commandCompleted.method,
     commandCompleted.params,
-  )[0]?.delta;
-  assert.equal(terminalCommand?.tool_calls, undefined);
+  )[0]?.activity;
+  assert.equal(terminalCommand?.calls, undefined);
   assert.equal(
-    (terminalCommand?.tool_results as Array<{ id: string }>)[0]?.id,
+    (terminalCommand?.results as Array<{ id: string }>)[0]?.id,
     "command",
   );
   const completed = protocolNotification({
@@ -1192,6 +1193,25 @@ test("normalizes interleaved text, reasoning, internal items, tools, usage, and 
   );
 });
 
+test("derives the aggregate finish reason from unresolved client calls", async () => {
+  const call = {
+    index: 0,
+    id: "client_call",
+    type: "function" as const,
+    function: { name: "lookup", arguments: "{}" },
+  };
+  const withCall = await aggregateNormalizedEvents([
+    { delta: { tool_calls: [call] } },
+    { finishReason: "stop" },
+  ]);
+  assert.equal(withCall.finishReason, "tool_calls");
+
+  const withoutCall = await aggregateNormalizedEvents([
+    { finishReason: "tool_calls" },
+  ]);
+  assert.equal(withoutCall.finishReason, "stop");
+});
+
 test("tool lifecycle output is emitted without truncation", () => {
   const normalizer = new EventNormalizer();
   const content = "o".repeat(70 * 1024);
@@ -1215,7 +1235,7 @@ test("tool lifecycle output is emitted without truncation", () => {
     delta: content,
     message,
     patch,
-  })[0]?.delta?.tool_results?.[0]?.result;
+  })[0]?.activity?.results?.[0]?.result;
   assert.equal(progress?.content, content);
   assert.equal(progress?.message, message);
   assert.deepEqual(progress?.patch, patch);
@@ -1230,7 +1250,7 @@ test("tool lifecycle output is emitted without truncation", () => {
       status: "completed",
       aggregatedOutput: content,
     },
-  })[0]?.delta?.tool_results?.[0]?.result;
+  })[0]?.activity?.results?.[0]?.result;
   assert.equal(completed?.content, content);
 });
 
@@ -1253,8 +1273,8 @@ test("sanitizes partial collab-agent lifecycle state without repeating its call"
   });
   assert.deepEqual(started, [
     {
-      delta: {
-        tool_calls: [
+      activity: {
+        calls: [
           {
             index: 0,
             id: "collab_wait",
@@ -1289,8 +1309,8 @@ test("sanitizes partial collab-agent lifecycle state without repeating its call"
   });
   assert.deepEqual(completed, [
     {
-      delta: {
-        tool_results: [
+      activity: {
+        results: [
           {
             id: "collab_wait",
             type: "function",
@@ -1333,21 +1353,21 @@ test("preserves sub-agent activity correlation without exposing agent paths", ()
         },
       },
     });
-    const delta = normalizer.normalize(
+    const activity = normalizer.normalize(
       notification.method,
       notification.params,
-    )[0]?.delta;
-    const call = delta?.tool_calls?.[0];
+    )[0]?.activity;
+    const call = activity?.calls?.[0];
     assert.equal(call?.function.name, "subAgentActivity");
     assert.deepEqual(JSON.parse(call!.function.arguments), {
       kind,
       agentThreadId: "thr_child",
     });
-    assert.deepEqual(delta?.tool_results?.[0]?.result, {
+    assert.deepEqual(activity?.results?.[0]?.result, {
       status: "completed",
       content: { kind, agentThreadId: "thr_child" },
     });
-    assert.equal(delta?.tool_results?.[0]?.id, call?.id);
+    assert.equal(activity?.results?.[0]?.id, call?.id);
   }
   const malformed = normalizer.normalize("item/completed", {
     item: {
@@ -1357,9 +1377,9 @@ test("preserves sub-agent activity correlation without exposing agent paths", ()
       agentThreadId: { private: true },
       agentPath: "/synthetic/private/agent",
     },
-  })[0]?.delta;
-  assert.equal(malformed?.tool_calls?.[0]?.function.arguments, "{}");
-  assert.deepEqual(malformed?.tool_results?.[0]?.result.content, {});
+  })[0]?.activity;
+  assert.equal(malformed?.calls?.[0]?.function.arguments, "{}");
+  assert.deepEqual(malformed?.results?.[0]?.result.content, {});
 });
 
 test("hides replayed dynamic lifecycle items without changing continuation finish reason", () => {
@@ -1876,7 +1896,7 @@ test("backfills completed reasoning without duplicating streamed prefixes", () =
   );
 });
 
-test("allocates unique call indexes across internal, dynamic, and orphan progress", () => {
+test("allocates independent indexes for client calls and Codex activity", () => {
   const normalizer = new EventNormalizer();
   const internal = normalizer.normalize("item/started", {
     item: { id: "internal", type: "commandExecution", command: "pwd" },
@@ -1899,19 +1919,19 @@ test("allocates unique call indexes across internal, dynamic, and orphan progres
     delta: "working",
   });
   const indexes = [internal[0], dynamic, laterInternal[0], orphan[0]].map(
-    (event) => (event?.delta?.tool_calls as Array<{ index: number }>)[0]?.index,
+    (event) => (event?.delta?.tool_calls ?? event?.activity?.calls)?.[0]?.index,
   );
-  assert.deepEqual(indexes, [0, 1, 2, 3]);
-  assert.deepEqual(orphan[0]?.delta?.tool_calls, [
+  assert.deepEqual(indexes, [0, 0, 1, 2]);
+  assert.deepEqual(orphan[0]?.activity?.calls, [
     {
-      index: 3,
+      index: 2,
       id: "orphan",
       type: "function",
       function: { name: "mcpToolCall_progress", arguments: "{}" },
     },
   ]);
   assert.equal(
-    (orphan[0]?.delta?.tool_results as Array<{ id: string }>)[0]?.id,
+    (orphan[0]?.activity?.results as Array<{ id: string }>)[0]?.id,
     "orphan",
   );
 });
@@ -1947,8 +1967,8 @@ test("uses completed web-search input and results instead of placeholders", () =
   });
   assert.deepEqual(completed, [
     {
-      delta: {
-        tool_calls: [
+      activity: {
+        calls: [
           {
             index: 0,
             id: "search",
@@ -1960,7 +1980,7 @@ test("uses completed web-search input and results instead of placeholders", () =
             },
           },
         ],
-        tool_results: [
+        results: [
           {
             id: "search",
             type: "function",
@@ -1989,7 +2009,7 @@ test("does not repeat arguments when orphan progress precedes item start", () =>
   const started = normalizer.normalize("item/started", {
     item: { id: "command", type: "commandExecution", command: "pwd" },
   });
-  assert.deepEqual(progress[0]?.delta?.tool_calls, [
+  assert.deepEqual(progress[0]?.activity?.calls, [
     {
       index: 0,
       id: "command",
@@ -1997,7 +2017,7 @@ test("does not repeat arguments when orphan progress precedes item start", () =>
       function: { name: "commandExecution_outputDelta", arguments: "{}" },
     },
   ]);
-  assert.equal(started[0]?.delta?.tool_calls, undefined);
+  assert.equal(started[0]?.activity?.calls, undefined);
 });
 
 test("exposes pinned item/plan/delta notifications as self-correlating progress", () => {
@@ -2015,7 +2035,7 @@ test("exposes pinned item/plan/delta notifications as self-correlating progress"
     notification.method,
     notification.params,
   );
-  assert.deepEqual(progress[0]?.delta?.tool_calls, [
+  assert.deepEqual(progress[0]?.activity?.calls, [
     {
       index: 0,
       id: "plan",
@@ -2024,7 +2044,7 @@ test("exposes pinned item/plan/delta notifications as self-correlating progress"
     },
   ]);
   assert.equal(
-    (progress[0]?.delta?.tool_results as Array<{ id: string }>)[0]?.id,
+    (progress[0]?.activity?.results as Array<{ id: string }>)[0]?.id,
     "plan",
   );
 });
@@ -2528,27 +2548,37 @@ test("returns sanitized collab-agent lifecycle output in the aggregate response"
     });
     assert.equal(response.status, 200);
     const body = (await response.json()) as {
+      x_codex?: {
+        activity?: {
+          calls?: Array<{
+            function: { name: string; arguments: string };
+          }>;
+          results?: Array<{
+            result: { content?: Record<string, unknown> };
+          }>;
+        };
+      };
       choices: Array<{
         finish_reason: string;
         message: {
           tool_calls?: Array<{
             function: { name: string; arguments: string };
           }>;
-          tool_results?: Array<{
-            result: { content?: Record<string, unknown> };
-          }>;
         };
       }>;
     };
     const choice = body.choices[0]!;
     assert.equal(choice.finish_reason, "stop");
-    assert.equal(choice.message.tool_calls?.length, 1);
+    assert.equal(choice.message.tool_calls, undefined);
+    assert.equal(body.x_codex?.activity?.calls?.length, 1);
     assert.deepEqual(
-      choice.message.tool_calls?.[0]?.function.name,
+      body.x_codex?.activity?.calls?.[0]?.function.name,
       "spawnAgent",
     );
     assert.deepEqual(
-      JSON.parse(choice.message.tool_calls?.[0]?.function.arguments ?? "null"),
+      JSON.parse(
+        body.x_codex?.activity?.calls?.[0]?.function.arguments ?? "null",
+      ),
       {
         tool: "spawnAgent",
         prompt: "Return the nonce.",
@@ -2557,7 +2587,7 @@ test("returns sanitized collab-agent lifecycle output in the aggregate response"
         receiverThreadIds: ["thr_child"],
       },
     );
-    assert.deepEqual(choice.message.tool_results, [
+    assert.deepEqual(body.x_codex?.activity?.results, [
       {
         id: "collab_spawn",
         type: "function",
@@ -2582,8 +2612,43 @@ test("returns sanitized collab-agent lifecycle output in the aggregate response"
     ]);
     assert.equal(
       "senderThreadId" in
-        (choice.message.tool_results?.[0]?.result.content ?? {}),
+        (body.x_codex?.activity?.results?.[0]?.result.content ?? {}),
       false,
+    );
+  });
+});
+
+test("keeps Codex-owned activity out of streaming tool calls", async () => {
+  await withChatServer(async (origin, _proxy, useTransport) => {
+    useTransport(fakeAppServer({ collabAgentLifecycle: true }));
+    const response = await fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "m",
+        stream: true,
+        messages: [{ role: "user", content: "spawn one child" }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const chunks = parseSseChunks(await response.text());
+    const standardToolCalls = chunks.flatMap((chunk) =>
+      (
+        (chunk.choices as Array<{ delta?: { tool_calls?: unknown[] } }>) ?? []
+      ).flatMap((choice) => choice.delta?.tool_calls ?? []),
+    );
+    const activityCalls = chunks.flatMap(
+      (chunk) =>
+        (
+          chunk.x_codex as
+            | { activity?: { calls?: Array<{ function: { name: string } }> } }
+            | undefined
+        )?.activity?.calls ?? [],
+    );
+    assert.deepEqual(standardToolCalls, []);
+    assert.deepEqual(
+      activityCalls.map((call) => call.function.name),
+      ["spawnAgent"],
     );
   });
 });

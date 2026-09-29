@@ -261,7 +261,7 @@ test("contract documents the implemented Stage 05 compatibility mappings", async
   assert.match(contract, /`reasoning_effort`.*`turn\/start\.effort`/);
   assert.match(
     contract,
-    /nonstandard direct compatibility field `tool_results`/,
+    /Response-level `x_codex\.activity\.calls`.*`x_codex\.activity\.results`/,
   );
   assert.match(
     contract,

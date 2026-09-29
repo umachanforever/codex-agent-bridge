@@ -20,6 +20,7 @@ Install from this repository with Node.js or Docker Compose. The deployment comm
 ## Features and limits
 
 - Text conversations, SSE streaming, client function tools, and continuation with tool results.
+- Standard `tool_calls` contain only functions the client must execute; completed Codex tool and agent activity is isolated under `x_codex.activity`.
 - Text-part arrays and harmless unknown history metadata; known fields and execution policies are still validated.
 - Client parameters are accepted by default: native settings are forwarded, and unmapped controls are ignored with a warning. Token caps do not limit output or model cost.
 - Reuse of local Codex authentication by default, with a separate writable Codex home for the proxy. Independent login is optional.
