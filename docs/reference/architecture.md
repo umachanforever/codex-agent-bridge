@@ -54,7 +54,7 @@ Each new proxy process makes one bounded, catalog-only refresh attempt in a temp
 
 ## HTTP translation
 
-The public routes are `/health`, `/ready`, `GET /v1/models`, and `POST /v1/chat/completions`. The model route reads the active app-server catalog without starting a Codex thread or turn. A chat request is validated and assigned an effective policy before any turn starts. Execution chooses a fresh thread or an admitted continuation, then uses the same app-server event stream for aggregate JSON and SSE output. The event normalizer exposes only supported activity; unknown notifications remain diagnostic. Token usage appears only when app-server provides attributable counts.
+The public routes are `/health`, `/ready`, `GET /v1/models`, `GET /v1/models/{id}`, and `POST /v1/chat/completions`. The model routes read the active app-server catalog without starting a Codex thread or turn. A chat request is validated and assigned an effective policy before any turn starts. Execution chooses a fresh thread or an admitted continuation, then uses the same app-server event stream for aggregate JSON and SSE output. The event normalizer exposes only supported activity; unknown notifications remain diagnostic. Token usage appears only when app-server provides attributable counts.
 
 For streaming, setup and the first event are processed before SSE headers are committed so early failures retain their HTTP error status. After headers are sent, failures are emitted inside the stream. Output writes honor backpressure; request cancellation and deadlines release the active turn and its transport work. [Continuation](continuation.md) describes how client-defined tool batches end a turn and resume through later HTTP requests.
 

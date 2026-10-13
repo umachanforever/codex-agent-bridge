@@ -128,6 +128,24 @@ test("GET /v1/models maps public selectors to the exact standard envelope", asyn
   });
 });
 
+test("GET /v1/models/:id returns the configured model item", async () => {
+  const catalog = catalogTransport(
+    new Map([
+      [null, { data: [protocolModel("gpt-6-luna")], nextCursor: null }],
+    ]),
+  );
+  await withModelProxy(catalog.fake, async (origin) => {
+    const response = await fetch(`${origin}/v1/models/gpt-6-luna`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      id: "gpt-6-luna",
+      object: "model",
+      created: 0,
+      owned_by: "openai",
+    });
+  });
+});
+
 test("GET /v1/models follows pages in order with exact model/list parameters", async () => {
   const catalog = catalogTransport(
     new Map([

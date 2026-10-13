@@ -23,7 +23,7 @@ import {
 } from "../core/policy.js";
 import { handleChatCompletion } from "./chat.js";
 import { completeText as executeTextCompletion } from "../sessions/completion.js";
-import { handleModelList } from "./models.js";
+import { handleModelList, handleModelRetrieve } from "./models.js";
 import { readModelCatalog } from "../app-server/models.js";
 import {
   localBridgeAuthorizer,
@@ -502,6 +502,26 @@ async function route({
   }
   if (request.method === "GET" && url?.pathname === "/v1/models") {
     await handleModelList(response, {
+      includeLocalAlias: localBridgeModel !== undefined,
+      rpc: readyTransport(ready, transport),
+      log,
+      requestId,
+      signal,
+    });
+    return;
+  }
+  if (request.method === "GET" && url?.pathname.startsWith("/v1/models/")) {
+    const modelId = decodeURIComponent(
+      url.pathname.slice("/v1/models/".length),
+    );
+    if (!modelId || modelId.includes("/"))
+      throw new HttpError(
+        404,
+        "Route not found.",
+        "invalid_request_error",
+        "route_not_found",
+      );
+    await handleModelRetrieve(response, modelId, {
       includeLocalAlias: localBridgeModel !== undefined,
       rpc: readyTransport(ready, transport),
       log,

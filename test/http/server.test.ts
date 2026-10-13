@@ -340,7 +340,6 @@ test("unsupported model management methods and item paths remain absent", async 
   await withServer({}, async (origin) => {
     for (const [path, method] of [
       ["/v1/models", "POST"],
-      ["/v1/models/gpt-6-luna", "GET"],
       ["/v1/models/gpt-6-luna", "DELETE"],
     ] as const) {
       const response = await fetch(`${origin}${path}`, { method });

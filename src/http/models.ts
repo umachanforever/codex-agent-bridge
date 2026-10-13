@@ -2,7 +2,7 @@ import type { ServerResponse } from "node:http";
 import { readModelCatalog, type CatalogModel } from "../app-server/models.js";
 import type { JsonRpcTransport } from "../app-server/json-rpc.js";
 import type { Logger } from "../core/logger.js";
-import { appServerError, writeJson } from "./errors.js";
+import { appServerError, HttpError, writeJson } from "./errors.js";
 
 /** Standard OpenAI-compatible representation of one available model. */
 export interface ModelListItem {
@@ -32,19 +32,55 @@ export async function handleModelList(
   response: ServerResponse,
   { rpc, log, requestId, signal, includeLocalAlias }: ModelListHandlerOptions,
 ): Promise<void> {
+  const visible = await visibleModels({ rpc, log, requestId, signal });
+  if (includeLocalAlias && !visible.has("codex-cli"))
+    visible.set("codex-cli", {
+      id: "codex-cli",
+      object: "model",
+      created: 0,
+      owned_by: "openai",
+    });
+  writeJson(response, 200, {
+    object: "list",
+    data: [...visible.values()],
+  } satisfies ModelListResponse);
+}
+
+/** Returns one model item for OpenAI clients that validate a configured model. */
+export async function handleModelRetrieve(
+  response: ServerResponse,
+  modelId: string,
+  options: ModelListHandlerOptions,
+): Promise<void> {
+  const visible = await visibleModels(options);
+  const model = visible.get(modelId);
+  if (!model)
+    throw new HttpError(
+      404,
+      `The model '${modelId}' does not exist.`,
+      "invalid_request_error",
+      "model_not_found",
+      "model",
+    );
+  writeJson(response, 200, model);
+}
+
+/** Reads and filters the catalog once for collection and item endpoints. */
+async function visibleModels({
+  rpc,
+  log,
+  requestId,
+  signal,
+  includeLocalAlias,
+}: ModelListHandlerOptions): Promise<Map<string, ModelListItem>> {
   let catalog: CatalogModel[];
   try {
     catalog = await readModelCatalog(rpc, { includeHidden: false, signal });
   } catch (cause) {
-    // The router owns cancellation's OpenAI-shaped timeout mapping so every
-    // endpoint reports client disconnects and request deadlines consistently.
     if (signal.aborted) throw signal.reason;
     log.failure("models_list_failed", { request_id: requestId }, cause);
     throw appServerError("The app-server could not list models.");
   }
-  // App-server's includeHidden flag is advisory, so hidden entries are dropped
-  // again here. Keying by selector also keeps a slug repeated across pages from
-  // becoming a duplicate id that clients index by.
   const visible = new Map(
     catalog
       .filter((model) => !model.hidden)
@@ -57,10 +93,7 @@ export async function handleModelList(
       created: 0,
       owned_by: "openai",
     });
-  writeJson(response, 200, {
-    object: "list",
-    data: [...visible.values()],
-  } satisfies ModelListResponse);
+  return visible;
 }
 
 /** Converts the app-server's public model selector to OpenAI's stable shape. */

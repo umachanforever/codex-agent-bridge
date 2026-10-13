@@ -81,7 +81,7 @@ curl http://127.0.0.1:8787/v1/models
 | Supported                                                                                                | Not supported                                           |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | `POST /v1/chat/completions` with text messages (`system`, `developer`, `user`, `assistant`, `tool`) and inline user images, audio, PDFs, and `x_codex` text/table files | Audio output and uploaded file IDs              |
-| `GET /v1/models` for visible models                                                                      | Responses API, embeddings, Images API, audio API, and model retrieval/deletion/mutation endpoints |
+| `GET /v1/models` and `GET /v1/models/{id}` for visible models                                             | Responses API, embeddings, Images API, audio API, and model deletion/mutation endpoints |
 | Streaming (SSE, ends with `data: [DONE]`) and non-streaming                                              |                                                         |
 | `reasoning_effort`, verbosity, and service tier forwarded to app-server                                 | Forced tool selection                                   |
 | Client-defined function tools, `tool_calls`, `finish_reason: "tool_calls"`                               | More than one choice per response                       |
@@ -129,6 +129,8 @@ file guide](https://developers.openai.com/api/docs/guides/file-inputs) limits
 standard Chat Completions file parts to PDF.
 
 `GET /v1/models` queries the active authenticated pinned app-server, aggregates every upstream `model/list` page, and returns only visible models. Each `id` is the Codex model slug accepted by the proxy. It starts zero Codex threads or turns. When the temporary Responses Lite override is installed, the response reflects its frozen catalog; otherwise it reflects app-server's ordinary catalog. `created: 0` and `owned_by: "openai"` are synthetic compatibility placeholders because app-server does not provide those fields.
+
+`GET /v1/models/{id}` returns the same standard model object for a visible model. This retrieval endpoint is provided for OpenAI-compatible clients that validate a configured model before sending chat requests.
 
 ## Streaming
 
