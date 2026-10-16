@@ -106,6 +106,7 @@ function streamedChunks(body: string): StreamedChunk[] {
 
 /** Turn behavior selected by one offline fake app-server. */
 interface FakeAppServerOptions {
+  reconnecting?: boolean;
   collabAgentLifecycle?: boolean;
   complete?: boolean;
   onInterrupt?: () => void;
@@ -121,6 +122,7 @@ interface FakeAppServerOptions {
 
 /** Creates an offline fake app-server transport with deliberately split frames. */
 function fakeAppServer({
+  reconnecting = false,
   collabAgentLifecycle = false,
   complete = true,
   onInterrupt = () => {},
@@ -159,6 +161,23 @@ function fakeAppServer({
             turn: protocolTurn("turn_test", "inProgress"),
           }),
         );
+        if (reconnecting)
+          send(
+            protocolNotification({
+              method: "error",
+              params: {
+                threadId: thread,
+                turnId: "turn_test",
+                willRetry: true,
+                error: {
+                  message: "Reconnecting... 1/5",
+                  codexErrorInfo: null,
+                  additionalDetails: null,
+                  misalignment: null,
+                },
+              },
+            }),
+          );
         if (requestTool) {
           suspendWithTools(send, thread, "turn_test", [
             {
@@ -553,6 +572,7 @@ function terminalFailureAppServer({
   codexErrorInfo = "usageLimitExceeded",
   message = "Usage limit reached.",
   duplicateTerminal = false,
+  reconnecting = false,
   resetAt,
 }: {
   terminal: "error" | "completed";
@@ -560,6 +580,7 @@ function terminalFailureAppServer({
   codexErrorInfo?: CodexErrorInfo | null;
   message?: string;
   duplicateTerminal?: boolean;
+  reconnecting?: boolean;
   resetAt: number;
 }): { rpc: FakeTransport["rpc"]; rateLimitReads(): number } {
   let reads = 0;
@@ -647,6 +668,18 @@ function terminalFailureAppServer({
             }),
           );
       };
+      if (reconnecting)
+        send(
+          protocolNotification({
+            method: "error",
+            params: {
+              threadId: "thr_quota",
+              turnId: "turn_quota",
+              willRetry: true,
+              error: { ...error, message: "Reconnecting... 1/5" },
+            },
+          }),
+        );
       report();
       if (duplicateTerminal) report();
     },
@@ -3436,6 +3469,7 @@ test("unclassified turn failures before output are JSON errors on a streaming re
       terminal: "error",
       codexErrorInfo: null,
       message: "turn failed",
+      reconnecting: true,
       resetAt: 2_000_000_060,
     });
     useTransport(fake);
@@ -3527,6 +3561,55 @@ test("persistence failure emits an SSE error before finish reason or usage", asy
       directory,
     );
   }, "codex-persist-failure-");
+});
+
+test("retryable upstream errors allow the same turn to finish in both response modes", async () => {
+  for (const stream of [false, true])
+    await withChatServer(async (origin, _proxy, useTransport) => {
+      useTransport(fakeAppServer({ reconnecting: true }));
+      const response = await fetch(`${origin}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "m",
+          stream,
+          messages: [{ role: "user", content: "continue after reconnect" }],
+        }),
+      });
+      assert.equal(response.status, 200);
+      const body = await response.text();
+      assert.match(body, /Hello/);
+      assert.doesNotMatch(body, /Reconnecting|app_server_error/);
+      if (stream) assert.match(body, /\[DONE\]/);
+    });
+});
+
+test("retryable upstream errors remain bounded by the request timeout", async () => {
+  let interrupted = false;
+  await withChatServer(async (origin, _proxy, useTransport) => {
+    useTransport(
+      fakeAppServer({
+        reconnecting: true,
+        complete: false,
+        onInterrupt: () => {
+          interrupted = true;
+        },
+      }),
+    );
+    const response = await fetch(`${origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "m",
+        stream: true,
+        messages: [{ role: "user", content: "wait for reconnect" }],
+      }),
+    });
+    const body = await response.text();
+    assert.match(body, /"code":"request_timeout"/);
+    assert.doesNotMatch(body, /Reconnecting|\[DONE\]/);
+  }, 50);
+  assert.equal(interrupted, true);
 });
 
 test("request timeout wakes a silent turn and closes its SSE stream", async () => {

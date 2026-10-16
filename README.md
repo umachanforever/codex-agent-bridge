@@ -20,6 +20,7 @@ Install from this repository with Node.js or Docker Compose. The deployment comm
 ## Features and limits
 
 - Text conversations, SSE streaming, client function tools, and continuation with tool results.
+- Upstream reconnection notifications keep the request open within its configured timeout; only terminal failures become client errors.
 - Standard `tool_calls` contain only functions the client must execute; Codex-owned tool and agent activity is isolated under `x_codex.activity`.
 - Text-part arrays, interrupted assistant turns, and harmless history metadata; tool pairing and execution policies remain validated.
 - Client parameters are accepted by default: native settings are forwarded, and unmapped controls are ignored with a warning. Token caps do not limit output or model cost.

@@ -311,6 +311,9 @@ export class EventNormalizer {
       return usage ? [{ usage }] : [];
     }
     if (method === "error") {
+      // app-server owns reconnection retries. These notifications do not end
+      // the turn; the request deadline still bounds how long we wait.
+      if (params.willRetry === true) return [];
       const error = record(params.error);
       return [terminalEvent(error, "The app-server turn failed.")];
     }

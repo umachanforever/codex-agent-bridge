@@ -14,6 +14,7 @@ Record the project commit or version, Node.js or Docker version, deployment prof
 | 429 | Distinguish local `overloaded` from upstream `usage_limit_exceeded`. Raising local concurrency cannot change upstream quota or rate limits. |
 | 503 `server_overloaded` | The upstream model is at capacity, independently of local concurrency. Retry later or select an available model. |
 | Timeout | Check client, gateway, bridge, and upstream deadlines. Extending the bridge deadline does not change the client's deadline. |
+| `502 Reconnecting...` | Upgrade the bridge if it returns a reconnection notification as a terminal error. An app-server `error` notification with `willRetry: true` keeps the turn open until recovery, terminal failure, or the existing request timeout (`request_timeout`). The proxy does not start additional model turns or reset the deadline. |
 | History contains unknown fields | Confirm that an agent-service or local compatibility profile is active. Harmless metadata is ignored; invalid types for known fields are still rejected. |
 | Image, audio, or file rejected | Use a supported inline base64 value and MIME type. Remote URLs, local paths, uploaded file IDs, and resources over the configured limits are rejected. The selected model must also support that media. |
 | JSON does not stream token by token | `json_schema` output is sent after completion and validation; ordinary text still streams incrementally. |
