@@ -452,7 +452,7 @@ function validateMessage(value: unknown, index: number): ChatMessage {
     });
   } else if (
     typeof message.content !== "string" &&
-    !(message.role === "assistant" && message.content === null)
+    !(message.role === "assistant" && message.content == null)
   )
     invalid("Message content must be a string.", `${param}.content`);
   const allowed = new Set([
@@ -507,15 +507,6 @@ function validateMessage(value: unknown, index: number): ChatMessage {
     if (new Set(toolCalls.map((call) => call.id)).size !== toolCalls.length)
       invalid("Assistant tool call IDs must be unique.", `${param}.tool_calls`);
   }
-  if (
-    message.role === "assistant" &&
-    message.content === null &&
-    (!toolCalls || toolCalls.length === 0)
-  )
-    invalid(
-      "Null assistant content requires at least one tool call.",
-      `${param}.content`,
-    );
   let internalToolCallIds: string[] | undefined;
   if (message.tool_results !== undefined) {
     if (
@@ -652,7 +643,11 @@ export function toHistoryItem(
   if (message.role === "system") return undefined;
   // A tool-only assistant response has no model-visible text to inject; its
   // calls are represented by the pairs `toHistoryItems` builds around it.
-  if (message.content === null) return undefined;
+  if (
+    message.content === null ||
+    (message.role === "assistant" && message.content === "")
+  )
+    return undefined;
   return {
     type: "message",
     role: message.role,

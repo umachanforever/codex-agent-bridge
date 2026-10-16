@@ -3,6 +3,7 @@ import { test } from "vitest";
 import { adaptLocalBridgeRequest } from "../../src/http/local-bridge.js";
 import {
   toHistoryItem,
+  toHistoryItems,
   validateRequest,
 } from "../../src/http/chat-validate.js";
 import { materializePdfParts } from "../../src/http/pdf-input.js";
@@ -503,11 +504,124 @@ test("assistant tool-only history may omit content without losing call IDs or ar
   ]);
   assert.equal(parsed.messages[1]?.toolCallId, call.id);
   assert.equal(parsed.messages[1]?.content, "mock result");
-  assert.throws(() => parse([{ role: "assistant" }]), /Message content/);
-  assert.throws(
-    () => parse([{ role: "assistant", tool_calls: [] }]),
-    /Message content/,
+  assert.equal(parse([{ role: "assistant" }]).messages[0]?.content, null);
+  assert.equal(
+    parse([{ role: "assistant", tool_calls: [] }]).messages[0]?.content,
+    null,
   );
+});
+
+test("interrupted and reasoning-only assistant history keeps visible text and tool pairs", () => {
+  const messages = [
+    { role: "user", content: "first question" },
+    { role: "assistant", content: null },
+    { role: "assistant", reasoning: "synthetic private reasoning" },
+    {
+      role: "assistant",
+      content: null,
+      reasoning_content: "synthetic reasoning",
+    },
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "synthetic thought" },
+        { type: "output_text", text: "visible answer" },
+      ],
+    },
+    {
+      role: "assistant",
+      content: [{ type: "reasoning", text: "synthetic thought" }],
+      tool_calls: [
+        {
+          id: "call",
+          type: "function",
+          function: { name: "lookup", arguments: "{}" },
+        },
+      ],
+    },
+    { role: "tool", tool_call_id: "call", content: "42" },
+    { role: "user", content: "continue" },
+  ];
+  const before = JSON.stringify(messages);
+  const replay = toHistoryItems(parse(messages).messages);
+  assert.equal(JSON.stringify(messages), before);
+  assert.equal(replay.unansweredCalls, 0);
+  assert.equal(replay.orphanResults, 0);
+  assert.deepEqual(replay.items, [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "first question" }],
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "visible answer" }],
+    },
+    { type: "function_call", call_id: "call", name: "lookup", arguments: "{}" },
+    { type: "function_call_output", call_id: "call", output: "42" },
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "continue" }],
+    },
+  ]);
+  for (const content of [null, undefined]) {
+    const strict = validateRequest(
+      {
+        model: "synthetic",
+        messages: [
+          { role: "assistant", content },
+          { role: "user", content: "continue" },
+        ],
+      },
+      silentLogger,
+      "synthetic-test",
+      true,
+    );
+    assert.equal(toHistoryItems(strict.messages).items.length, 1);
+  }
+});
+
+test("reasoning compatibility rejects malformed parts without exposing their content", () => {
+  for (const part of [
+    { type: "thinking", thinking: {} },
+    { type: "reasoning", text: 42 },
+  ]) {
+    assert.throws(
+      () => parse([{ role: "assistant", content: [part] }]),
+      (error) =>
+        error instanceof HttpError &&
+        error.param === "messages.0.content.0" &&
+        error.code === "invalid_content_part",
+    );
+    assert.throws(
+      () => parse([{ role: "user", content: [part] }]),
+      /Only text content parts/,
+    );
+  }
+});
+
+test("empty assistant placeholders do not reconnect separated tool-result blocks", () => {
+  const parsed = parse([
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "call",
+          type: "function",
+          function: { name: "lookup", arguments: "{}" },
+        },
+      ],
+    },
+    { role: "assistant", content: null },
+    { role: "tool", tool_call_id: "call", content: "foreign block" },
+    { role: "user", content: "continue" },
+  ]);
+  const replay = toHistoryItems(parsed.messages);
+  assert.equal(replay.unansweredCalls, 1);
+  assert.equal(replay.orphanResults, 1);
+  assert.equal(replay.items.length, 1);
 });
 
 test("inline user images keep text order in turn and replay mappings", () => {

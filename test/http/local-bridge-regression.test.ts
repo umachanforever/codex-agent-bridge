@@ -556,7 +556,7 @@ test("managed key revocation gates HTTP admission without touching the legacy be
   );
 });
 
-test("HTTP follow-ups accept WorkBuddy assistant response metadata in both modes", async () => {
+test("HTTP follow-ups accept WorkBuddy metadata and interrupted assistant history in both modes", async () => {
   await localProxy(
     async (origin) => {
       const first = await post(origin, {});
@@ -582,6 +582,18 @@ test("HTTP follow-ups accept WorkBuddy assistant response metadata in both modes
               requestModelName: "old-name",
               traceId: "synthetic-trace",
               usage: {},
+            },
+            { role: "assistant", content: null },
+            { role: "assistant", reasoning: "synthetic response-only thought" },
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "thinking",
+                  thinking: "synthetic response-only thought",
+                },
+                { type: "output_text", text: "synthetic visible context" },
+              ],
             },
             { role: "user", content: "synthetic follow-up" },
           ],

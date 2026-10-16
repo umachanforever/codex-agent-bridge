@@ -41,15 +41,10 @@ function normalizeMessage(value: unknown, index: number): unknown {
     if (Array.isArray(message.annotations) && message.annotations.length === 0)
       delete message.annotations;
   }
-  // OpenAI tool-only assistant messages may omit content. Keep the normal
-  // validator responsible for the shape and correlation of their tool calls.
-  if (
-    message.role === "assistant" &&
-    message.content === undefined &&
-    Array.isArray(message.tool_calls) &&
-    message.tool_calls.length > 0
-  )
-    return { ...message, content: null };
+  // Interrupted and reasoning-only assistant turns may omit visible content.
+  // Keep their position so pending tool-result correlation remains unchanged.
+  if (message.role === "assistant" && message.content === undefined)
+    message.content = null;
   if (!Array.isArray(message.content)) return message;
   // The validator checks every part, including malformed ones, and preserves
   // media order. Never flatten a mixed message into a text-only prompt.
@@ -74,7 +69,27 @@ function normalizeMessage(value: unknown, index: number): unknown {
           "invalid_content_part",
           param,
         );
-      if (part.type !== "text" && part.type !== "input_text")
+      if (
+        message.role === "assistant" &&
+        (part.type === "thinking" || part.type === "reasoning")
+      ) {
+        if (typeof (part.thinking ?? part.text) !== "string")
+          throw new HttpError(
+            400,
+            "Assistant reasoning parts require string text.",
+            "invalid_request_error",
+            "invalid_content_part",
+            param,
+          );
+        // Like the response-only reasoning fields, replayed thinking must not
+        // become instructions or impersonate app-server's reasoning state.
+        return "";
+      }
+      if (
+        part.type !== "text" &&
+        part.type !== "input_text" &&
+        !(message.role === "assistant" && part.type === "output_text")
+      )
         throw new HttpError(
           400,
           "Only text content parts are supported; image, audio, file and other non-text parts cannot be forwarded.",

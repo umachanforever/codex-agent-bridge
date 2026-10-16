@@ -2,6 +2,8 @@
 
 [English](../en/compatibility.md) | 简体中文
 
+重放的助手消息允许内容为 null 或省略内容，包括中断与只有思考内容的轮次。空助手占位消息不会注入新 Codex 线程。本地 profile 接受助手的 `output_text` 分段，并在校验后忽略 `thinking`/`reasoning` 分段，与响应专用的 `reasoning`、`reasoning_content` 字段一致。可见文本与完整工具调用/结果配对会保留；待处理工具结果的关联和策略校验继续生效。
+
 代理一次只面向一个 app-server 契约。当前运行时依赖为在 `package.json` 中精确固定的 `@openai/codex` **0.155.1**。生成的实验性 TypeScript 与 JSON Schema 契约提交在 `protocol/`，版本与生成命令记录于 `protocol/VERSION.json`。默认启动与协议生成都使用包内可执行文件；显式 `--codex-path` 必须报告相同版本。升级 Codex 前必须重新审查契约。
 
 | 兼容边界 | 当前行为 | Codex 升级影响 |

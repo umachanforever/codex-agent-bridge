@@ -3682,7 +3682,7 @@ test("rejects ambiguous history and executes an unknown continuation on a fresh 
       {
         model: "m",
         messages: [
-          { role: "assistant", content: null, tool_calls: [] },
+          { role: "assistant", content: 42, tool_calls: [] },
           { role: "user", content: "continue" },
         ],
       },

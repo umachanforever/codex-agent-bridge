@@ -2,6 +2,8 @@
 
 English | [简体中文](../zh-CN/compatibility.md)
 
+Replayed assistant messages may have null or omitted content, including interrupted and reasoning-only turns. Empty assistant placeholders are not injected into a fresh Codex thread. The local profile accepts assistant `output_text` parts and validates then omits `thinking`/`reasoning` parts, matching its response-only `reasoning` and `reasoning_content` fields. Visible text and complete tool-call/result pairs survive replay; pending-result correlation and policy checks remain enforced.
+
 The proxy targets one app-server contract at a time. The current runtime dependency is `@openai/codex` **0.155.1**, pinned exactly in `package.json`. Its generated experimental TypeScript and JSON Schema contract is checked into `protocol/`, with the version and generation commands recorded in `protocol/VERSION.json`. The package-owned executable supplies normal startup and protocol generation; an explicit `--codex-path` must report the same version. A different Codex release needs a contract review before it can run behind the proxy.
 
 | Compatibility boundary                    | Current behavior                                                                                                                                       | Consequence of a Codex update                                                                                                                                             |
