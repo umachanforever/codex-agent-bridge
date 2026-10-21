@@ -32,8 +32,10 @@ export function fakeCodexScript(options: FakeCodexScriptOptions): string {
     options.initializeResponse ?? protocolInitializeResponse();
   const requirementsResponse =
     options.requirementsResponse ??
-    protocolResponse("configRequirements/read", 0, { requirements: null })
-      .result;
+    protocolResponse("configRequirements/read", 0, {
+      requirements: null,
+      supportsIndependentSpeedModes: false,
+    }).result;
   const versionOutput = JSON.stringify(`codex-cli ${options.version}`);
   const initializeJson = JSON.stringify(initializeResponse);
   const requirementsJson = JSON.stringify(requirementsResponse);
@@ -52,6 +54,10 @@ export function fakeCodexScript(options: FakeCodexScriptOptions): string {
 "use strict";
 if (process.argv.includes("--version")) {
   console.log(${versionOutput});
+  process.exit(0);
+}
+if (process.argv.includes("--bundled")) {
+  console.log(JSON.stringify({models:[{slug:"gpt-6-luna",use_responses_lite:true}]}));
   process.exit(0);
 }
 const readline = require("node:readline");

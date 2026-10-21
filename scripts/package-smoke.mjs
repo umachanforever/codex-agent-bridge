@@ -502,6 +502,7 @@ async function main() {
         cwd: installRoot,
         env: {
           ...process.env,
+          CODEX_HOME: join(installRoot, "isolated-auth-source"),
           PACKAGE_SMOKE_RPC_OBSERVATION_PATH: rpcObservationPath,
         },
         stdio: ["ignore", "pipe", "pipe"],

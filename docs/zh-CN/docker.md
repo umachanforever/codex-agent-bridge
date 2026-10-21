@@ -9,7 +9,7 @@ Docker Compose 会从本仓库构建代理，并只发布到 `127.0.0.1`。桥�
 复用已有本地 Codex 登录时，按[中文 README](README.md#使用-docker-部署)创建密钥，将 `LOCAL_CODEX_HOME` 指向包含 `auth.json` 的目录，然后启动标准部署：
 
 ```sh
-docker compose -f compose.yaml -f compose.local-auth.yaml up -d --build
+npm run deploy -- -f compose.yaml -f compose.local-auth.yaml
 docker compose -f compose.yaml -f compose.local-auth.yaml ps
 ```
 
@@ -29,6 +29,20 @@ Docker 默认请求期限为 6 小时、JSON body 上限 128 MiB、最大并发 
 
 ## 升级与备份
 
-每次升级都使用相同的 Compose 文件、环境和 project name。替换服务前先在控制台确认没有在途请求，因为重启会中断它们。随后用与启动时相同的选项运行 `docker compose ... up -d --build`，并使用客户端 key 验证 `/ready`。
+后续部署用相同的 Compose 文件、环境文件与 project name 执行 `npm run deploy -- ...`。脚本只替换本仓库对应的用户 crontab 项。从旧版本首次迁移时缺少请求入口维护门禁，应选择空闲维护窗口操作。
+
+## 午夜自动升级
+
+仓库脚本 `scripts/deploy-auto-update.mjs` 独立于 Codex App 运行。macOS/Linux 上的 `npm run deploy -- ...` 会安装宿主机当地时间每天 00:00 的用户 cron 任务。宿主机必须开机、cron 正常运行，部署用户可无交互使用 Node.js 22+、npm、Git 和 Docker Compose。直接 `docker compose up` 仍为手动部署，不安装定时任务。独立登录模式首次就绪失败时，先完成设备码登录再重试部署。
+
+Compose 全局参数放在 `--` 后，例如 `npm run deploy -- --env-file .env -f compose.yaml -f compose.local-auth.yaml -p codex-agent-bridge`。插值配置保存在环境文件中，cron 不继承交互 shell 的临时环境变量。参数中不要放秘密。仓库或工具路径移动后重新执行部署命令。暂不支持 Windows 定时部署。
+
+午夜先检查 `/health`；有在途请求、不健康或已有维护标记则跳过当晚。脚本查询 npm 的 Codex 稳定版，仅升级更高版本。在临时源码快照中安装新版本，包含本地未忽略的修改，并要求协议生成、格式、lint、离线测试、打包检查、镜像构建、原生 SQLite 和运行时版本检查全部通过。源仓库及固定版本保持原样。这些检查不生成模型回复。兼容性检查失败时旧服务继续运行，维护者需适配仓库。
+
+替换前独占创建 `/data/state/update-maintenance`，新 Chat Completions 和内部文本补全返回 HTTP 503 `update_in_progress`，已接收的请求正常完成。60 秒内无法确认空闲则取消更新。替换后通过网关检查就绪与模型列表，失败则恢复旧镜像，保留数据卷。镜像回滚不能撤销上游持久化数据迁移，重要数据须备份，并在依赖无人值守升级前审查上游兼容性。未执行中的历史会话不阻止更新。
+
+私有调度状态和简要失败信息位于已忽略的 `.auto-update/`，日志 `update.log` 权限为 600。兼容性失败可在独立检出中执行 `npm run update:codex -- EXACT_VERSION` 获取完整诊断。错过午夜不补跑，宿主机锁防止任务重叠。进程被强杀后，确认无更新进程，再移除 `.auto-update/lock` 及数据卷中的 `update-maintenance` 标记。卸载时用 `crontab -e` 仅移除以本仓库 `# codex-agent-bridge:...` 标记结尾的一行，保留其他任务。
+
+## 备份
 
 服务停止后，将 Codex home 与状态卷一起备份。状态卷包含管理员数据库、加密密钥和续写映射。客户端 key 与备份都应私密保存；恢复时必须匹配状态与加密密钥，不能在没有一致性快照的情况下复制正在使用的 SQLite 数据库。

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import net from "node:net";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -699,4 +700,65 @@ test("a timed-out backpressured stream releases its concurrency slot", async () 
       assert.equal((await pollHealth(origin, 200)).status, 200);
     },
   );
+});
+
+/** Maintenance is a generation admission gate; probes and already accepted bodies stay usable. */
+test("maintenance rejects new generations while an admitted request drains", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "bridge-maintenance-"));
+  try {
+    await withServer({ stateDir, maxRequests: 1 }, async (origin, proxy) => {
+      const url = new URL(origin);
+      const request = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: "/v1/chat/completions",
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "2" },
+      });
+      request.flushHeaders();
+      // A health request on the same listener establishes that the incomplete request was admitted.
+      assert.equal((await pollHealth(origin, 429)).status, 429);
+      await writeFile(join(stateDir, "update-maintenance"), "synthetic update");
+      for (const path of ["/v1/chat/completions", "/chat/completions"]) {
+        const response = await fetch(`${origin}${path}`, {
+          method: "POST",
+          body: "{}",
+        });
+        assert.equal(response.status, 503);
+        assert.equal(
+          ((await response.json()) as { error: { code: string } }).error.code,
+          "update_in_progress",
+        );
+      }
+      await assert.rejects(
+        proxy.completeText({}, new AbortController().signal),
+        { code: "update_in_progress" },
+      );
+      assert.equal((await fetch(`${origin}/health`)).status, 429);
+      proxy.setReady(true);
+      assert.equal((await fetch(`${origin}/ready`)).status, 429);
+      const finished = once(request, "response");
+      request.end("{}");
+      const [response] = await finished;
+      assert(response instanceof http.IncomingMessage);
+      // The admitted request reaches transport readiness instead of being rejected by maintenance.
+      assert.equal(response.statusCode, 503);
+      response.resume();
+      await once(response, "end");
+      await rm(join(stateDir, "update-maintenance"));
+      const restored = await fetch(`${origin}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(restored.status, 503);
+      assert.equal(
+        ((await restored.json()) as { error: { code: string } }).error.code,
+        "app_server_not_ready",
+      );
+      assert.equal((await fetch(`${origin}/ready`)).status, 200);
+    });
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });

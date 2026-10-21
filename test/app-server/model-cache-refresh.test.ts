@@ -161,3 +161,71 @@ test("undefined fetch rejection cannot publish a cache or lose rotated auth", as
     );
   });
 });
+
+test("API-key mode refreshes from the current binary without requiring a ChatGPT cache", async () => {
+  await withTempDir(async (home) => {
+    const path = join(home, "models_cache.json");
+    const auth = JSON.stringify({
+      auth_mode: "apikey",
+      OPENAI_API_KEY: "synthetic-key",
+    });
+    await writeFile(path, cache("0.154.0", "old-model"));
+    await writeFile(join(home, "auth.json"), auth);
+    await refreshModelCache({
+      codexHome: home,
+      codexPath: "codex",
+      root: home,
+      shutdownTimeoutMs: 1_000,
+      log: silentLogger,
+      readBundledCatalog: async () =>
+        JSON.stringify({
+          models: [
+            {
+              slug: "new-model",
+              base_instructions: "synthetic instructions",
+              use_responses_lite: true,
+            },
+          ],
+        }),
+    });
+    const result = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(result.client_version, PINNED_CODEX_VERSION);
+    assert.equal(result.source, "bundled");
+    assert.equal(result.fetched_at, undefined);
+    assert.equal(result.models[0].slug, "new-model");
+    assert.equal(result.models[0].base_instructions, "synthetic instructions");
+    assert.equal(await readFile(join(home, "auth.json"), "utf8"), auth);
+  });
+});
+
+test("failed or malformed bundled diagnostics preserve the previous API-key catalog", async () => {
+  await withTempDir(async (home) => {
+    const path = join(home, "models_cache.json");
+    const previous = cache("0.154.0", "old-model");
+    await writeFile(path, previous);
+    await writeFile(
+      join(home, "auth.json"),
+      JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "synthetic-key" }),
+    );
+    for (const readBundledCatalog of [
+      async () => {
+        throw new Error("diagnostic failed");
+      },
+      async () => "invalid",
+      async () => "null",
+      async () => JSON.stringify({ models: [] }),
+    ]) {
+      await assert.rejects(
+        refreshModelCache({
+          codexHome: home,
+          codexPath: "codex",
+          root: home,
+          shutdownTimeoutMs: 1_000,
+          log: silentLogger,
+          readBundledCatalog,
+        }),
+      );
+      assert.equal(await readFile(path, "utf8"), previous);
+    }
+  });
+});

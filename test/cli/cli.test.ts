@@ -38,6 +38,7 @@ const embeddedProtocolResults = {
   authenticatedAccount: JSON.stringify(protocolAuthenticatedAccountResponse()),
   unauthenticatedAccount: JSON.stringify({
     account: null,
+    workspaceRouting: null,
     requiresOpenaiAuth: true,
   } satisfies ReturnType<typeof protocolAuthenticatedAccountResponse>),
   login: JSON.stringify(
@@ -166,7 +167,10 @@ test("CLI rejects unsafe binds before opening a socket", async () => {
   const child = spawn(
     process.execPath,
     ["dist/bin.js", "serve", "--host", "0.0.0.0"],
-    { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+    {
+      cwd: repoRootPath,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
   let stderr = "";
   child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -194,7 +198,15 @@ test("CLI reports a bind-time port conflict before starting app-server", async (
           "--codex-path",
           join(directory, "must-not-start"),
         ],
-        { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: repoRootPath,
+          // Fake app-server scenarios must not import the developer's real API-key login.
+          env: {
+            ...process.env,
+            CODEX_HOME: join(directory, "isolated-auth-source"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       let stderr = "";
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -230,7 +242,15 @@ test("CLI logs configured paths plainly in initial startup failures", async () =
         "--codex-path",
         missingCodex,
       ],
-      { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+      {
+        cwd: repoRootPath,
+        // Fake app-server scenarios must not import the developer's real API-key login.
+        env: {
+          ...process.env,
+          CODEX_HOME: join(directory, "isolated-auth-source"),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
     let stderr = "";
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -279,12 +299,22 @@ if(process.argv.includes('--version')) {
             "0",
             "--state-dir",
             join(directory, "state"),
+            "--codex-home",
+            join(directory, "isolated-codex-home"),
             "--codex-path",
             fake,
             "--shutdown-timeout",
             "1s",
           ],
-          { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+          {
+            cwd: repoRootPath,
+            // Fake app-server scenarios must not import the developer's real API-key login.
+            env: {
+              ...process.env,
+              CODEX_HOME: join(directory, "isolated-auth-source"),
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+          },
         );
         let stderr = "";
         child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -332,10 +362,20 @@ testWithPosixExecutable(
           ".",
           "--state-dir",
           join(directory, "state"),
+          "--codex-home",
+          join(directory, "isolated-codex-home"),
           "--codex-path",
           fake,
         ],
-        { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: repoRootPath,
+          // Fake app-server scenarios must not import the developer's real API-key login.
+          env: {
+            ...process.env,
+            CODEX_HOME: join(directory, "isolated-auth-source"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       let stderr = "";
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -412,7 +452,15 @@ if (!fs.existsSync(cachePath))
           "--codex-path",
           fake,
         ],
-        { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: repoRootPath,
+          // Fake app-server scenarios must not import the developer's real API-key login.
+          env: {
+            ...process.env,
+            CODEX_HOME: join(directory, "isolated-auth-source"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       let stderr = "";
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -808,12 +856,22 @@ process.on("SIGTERM", () => process.exit(0));`,
           String(port),
           "--state-dir",
           join(directory, "state"),
+          "--codex-home",
+          join(directory, "isolated-codex-home"),
           "--codex-path",
           fake,
           "--shutdown-timeout",
           "2s",
         ],
-        { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: repoRootPath,
+          // Fake app-server scenarios must not import the developer's real API-key login.
+          env: {
+            ...process.env,
+            CODEX_HOME: join(directory, "isolated-auth-source"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       let stderr = "";
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -889,12 +947,22 @@ if (count !== 4) {
           "0",
           "--state-dir",
           join(directory, "state"),
+          "--codex-home",
+          join(directory, "isolated-codex-home"),
           "--codex-path",
           fake,
           "--shutdown-timeout",
           "2s",
         ],
-        { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: repoRootPath,
+          // Fake app-server scenarios must not import the developer's real API-key login.
+          env: {
+            ...process.env,
+            CODEX_HOME: join(directory, "isolated-auth-source"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       let stderr = "";
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -963,6 +1031,8 @@ process.on("SIGTERM", () => {
           "0",
           "--state-dir",
           join(directory, "state"),
+          "--codex-home",
+          join(directory, "isolated-codex-home"),
           "--codex-path",
           fake,
           // This child's stderr is a pipe, so `auto` would select device code.
@@ -977,7 +1047,15 @@ process.on("SIGTERM", () => {
           "--shutdown-timeout",
           "2s",
         ],
-        { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: repoRootPath,
+          // Fake app-server scenarios must not import the developer's real API-key login.
+          env: {
+            ...process.env,
+            CODEX_HOME: join(directory, "isolated-auth-source"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       let stderr = "";
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -1050,12 +1128,22 @@ process.on("SIGTERM", () => setTimeout(() => process.exit(0), 200));`,
           String(port),
           "--state-dir",
           join(directory, "state"),
+          "--codex-home",
+          join(directory, "isolated-codex-home"),
           "--codex-path",
           fake,
           "--shutdown-timeout",
           "2s",
         ],
-        { cwd: repoRootPath, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: repoRootPath,
+          // Fake app-server scenarios must not import the developer's real API-key login.
+          env: {
+            ...process.env,
+            CODEX_HOME: join(directory, "isolated-auth-source"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       let stderr = "";
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {

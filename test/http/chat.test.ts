@@ -333,6 +333,7 @@ function policyCapturingAppServer(): {
       } else if (message.method === "thread/read")
         send(
           protocolResponse("thread/read", id, {
+            readState: null,
             thread: protocolThread(requestedThreadId(message)),
           }),
         );
@@ -1379,6 +1380,8 @@ test("preserves sub-agent activity correlation without exposing agent paths", ()
         completedAtMs: 1,
         item: {
           type: "subAgentActivity",
+          model: null,
+          reasoningEffort: null,
           id: `activity_${kind}`,
           kind,
           agentThreadId: "thr_child",
@@ -1405,6 +1408,8 @@ test("preserves sub-agent activity correlation without exposing agent paths", ()
   const malformed = normalizer.normalize("item/completed", {
     item: {
       type: "subAgentActivity",
+      model: null,
+      reasoningEffort: null,
       id: "malformed_activity",
       kind: "unknown",
       agentThreadId: { private: true },

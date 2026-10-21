@@ -32,7 +32,7 @@ Codex Agent Bridge 通过兼容 OpenAI Chat Completions 的接口，将本地的
 
 ## 环境要求
 
-- Node.js 22+（推荐 Node 24）、npm，以及一次本地 Codex 登录。
+- Node.js 22+（推荐 Node 24）、npm，以及一次本地 Codex 登录。内置 app-server 固定为 Codex 0.163.0，见[兼容性审查](compatibility.md)。
 - Docker Compose v2（仅在使用 Docker 部署时需要）。
 
 ## 从源码运行
@@ -56,7 +56,11 @@ node dist/bin.js serve --agent-service-model gpt-6-luna --admin-port 8789
 
 鉴权同步仅复制 `auth.json`，不会复制个人 Codex 配置。自定义 provider 需要在代理隔离的 Codex home 中单独配置，详见[鉴权说明](client-api.md#鉴权)。`codex-openai-proxy` CLI 别名与既有的默认 state 路径保持兼容。本项目打包产物同时提供 `codex-agent-bridge` 命令。
 
+API key 部署会在启动时读取当前 Codex 二进制的模型目录，升级后可显示新版内置模型。
+
 ## 使用 Docker 部署
+
+部署脚本会在 macOS/Linux 宿主机安装当地时间每天 00:00 的自动升级任务，需要 Node.js、npm、Git、Docker Compose v2 和运行中的 cron 服务。有在途请求则跳过当晚；升级须通过兼容性与就绪检查。详见 [Docker 指南](docker.md#午夜自动升级)。
 
 从本仓库首次部署时创建客户端 key，并将 Compose 指向存放登录信息的目录：
 
@@ -66,7 +70,7 @@ chmod 700 secrets
 # 仅首次创建；切勿覆盖已有 key。
 (set -C; umask 077; openssl rand -hex 32 | sed 's/^/sk-/' > secrets/bridge-token)
 export LOCAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-docker compose -f compose.yaml -f compose.local-auth.yaml up -d --build
+npm run deploy -- -f compose.yaml -f compose.local-auth.yaml
 docker compose -f compose.yaml -f compose.local-auth.yaml ps
 ```
 

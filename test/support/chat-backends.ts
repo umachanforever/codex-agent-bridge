@@ -605,6 +605,7 @@ function createScriptedTransport(
       if (message.method === "thread/read") {
         send(
           protocolResponse("thread/read", message.id, {
+            readState: null,
             thread: protocolThread(String(params.threadId)),
           }),
         );

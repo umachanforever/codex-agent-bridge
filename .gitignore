@@ -11,3 +11,5 @@ web-dist/
 web/node_modules/
 deploy/local/
 .workbuddy/
+
+.auto-update/

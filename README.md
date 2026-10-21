@@ -32,7 +32,7 @@ Install from this repository with Node.js or Docker Compose. The deployment comm
 
 ## Requirements
 
-- Node.js 22+ (Node 24 recommended), npm, and a local Codex login.
+- Node.js 22+ (Node 24 recommended), npm, and a local Codex login. The bundled app-server is pinned to Codex 0.163.0; see the [compatibility review](docs/en/compatibility.md).
 - Docker Compose v2 for container deployment.
 
 ## Run from source
@@ -58,7 +58,11 @@ Keep the final command running.
 
 Authentication sync copies only `auth.json`, not personal Codex configuration. A custom provider requires separate configuration in the proxy's isolated Codex home; see [authentication](docs/en/client-api.md#authentication). The `codex-openai-proxy` CLI alias and existing default state paths remain compatible. This project's packaged output also provides the `codex-agent-bridge` command.
 
+API-key deployments refresh the model catalog from the installed Codex binary at startup, so new bundled models appear after an upgrade.
+
 ## Deploy with Docker
+
+The deployment script installs host-local midnight updates on macOS/Linux. It requires Node.js, npm, Git, Docker Compose v2 and a running cron service. Busy services skip that night; compatibility checks and readiness verification protect replacement. See the [Docker guide](docs/en/docker.md#automatic-midnight-updates).
 
 From this checkout, create a client key on first deployment and point Compose to the directory containing your login:
 
@@ -68,7 +72,7 @@ chmod 700 secrets
 # First creation only; never overwrite an existing key.
 (set -C; umask 077; openssl rand -hex 32 | sed 's/^/sk-/' > secrets/bridge-token)
 export LOCAL_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-docker compose -f compose.yaml -f compose.local-auth.yaml up -d --build
+npm run deploy -- -f compose.yaml -f compose.local-auth.yaml
 docker compose -f compose.yaml -f compose.local-auth.yaml ps
 ```
 

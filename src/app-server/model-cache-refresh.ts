@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   chmod,
   mkdir,
@@ -11,8 +13,15 @@ import { join } from "node:path";
 import type { Logger } from "../core/logger.js";
 import { readPrivateFile, replacePrivateFile } from "../core/private-file.js";
 import { record } from "../core/canonical.js";
-import { PINNED_CODEX_VERSION, startAppServer } from "./app-server.js";
+import {
+  PINNED_CODEX_VERSION,
+  resolveCodexInvocation,
+  startAppServer,
+} from "./app-server.js";
 import { configWithoutModelCatalogOverride } from "./responses-lite-override.js";
+
+/** Captures a bounded Codex diagnostic command without a shell. */
+const execFileAsync = promisify(execFile);
 
 /** Inputs for one best-effort startup refresh of Codex-owned model metadata. */
 export interface ModelCacheRefreshOptions {
@@ -24,6 +33,8 @@ export interface ModelCacheRefreshOptions {
   signal?: AbortSignal;
   /** Replaces only the catalog fetch in deterministic offline tests. */
   fetchCatalog?: (scratchHome: string) => Promise<void>;
+  /** Replaces only the bundled diagnostic command in offline tests. */
+  readBundledCatalog?: () => Promise<string>;
 }
 
 /** Fetches through a fresh home so the selected static catalog cannot mask updates. */
@@ -31,6 +42,49 @@ async function fetchFreshCatalog(
   options: ModelCacheRefreshOptions,
   scratchHome: string,
 ): Promise<void> {
+  const auth = await readPrivateFile(join(options.codexHome, "auth.json"));
+  // API-key mode does not fetch/write the ChatGPT catalog; use this binary's full metadata.
+  if (
+    auth !== undefined &&
+    record(JSON.parse(auth.toString("utf8")))?.auth_mode === "apikey"
+  ) {
+    const invocation = resolveCodexInvocation(options.codexPath);
+    const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: scratchHome };
+    // Match app-server isolation: downstream management/client keys are not Codex credentials.
+    delete env.CODEX_BRIDGE_TOKEN;
+    delete env.CODEX_BRIDGE_TOKEN_FILE;
+    delete env.CODEX_BRIDGE_ADMIN_TOKEN_FILE;
+    const source = options.readBundledCatalog
+      ? await options.readBundledCatalog()
+      : (
+          await execFileAsync(
+            invocation.command,
+            [...invocation.prefixArgs, "debug", "models", "--bundled"],
+            {
+              cwd: options.root,
+              env,
+              timeout: 30_000,
+              maxBuffer: 16 * 1024 * 1024,
+              ...(options.signal === undefined
+                ? {}
+                : { signal: options.signal }),
+            },
+          )
+        ).stdout;
+    const catalog = record(JSON.parse(source));
+    if (!catalog)
+      throw new Error("Bundled Codex model catalog is not an object.");
+    await writeFile(
+      join(scratchHome, "models_cache.json"),
+      JSON.stringify({
+        ...catalog,
+        client_version: PINNED_CODEX_VERSION,
+        source: "bundled",
+      }),
+      { mode: 0o600 },
+    );
+    return;
+  }
   const appServer = await startAppServer({
     codexPath: options.codexPath,
     codexHome: scratchHome,

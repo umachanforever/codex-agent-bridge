@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type {
   AdminStore,
   RequestRecord,
@@ -71,6 +73,9 @@ export function createProxyServer(
   let continuations: ContinuationCoordinator | undefined;
   const continuationStore = new ResponseStore(options.stateDir);
   let active = 0;
+  // A host updater closes admission before checking idle; existing work drains normally.
+  const maintenance = (): boolean =>
+    existsSync(join(options.stateDir, "update-maintenance"));
   const controllers = new Set<AbortController>();
   const sockets = new Set<Socket>();
   const server = createServer((request, response) => {
@@ -156,6 +161,19 @@ export function createProxyServer(
       request.method === "POST" &&
       (url?.pathname === "/v1/chat/completions" ||
         url?.pathname === "/chat/completions");
+    if (isCompletion && maintenance()) {
+      writeError(
+        response,
+        new HttpError(
+          503,
+          "The proxy is preparing an update.",
+          "server_error",
+          "update_in_progress",
+        ),
+      );
+      logRequest(503);
+      return;
+    }
     const saveRecord = (): void => {
       if (!administration || !isCompletion) return;
       try {
@@ -243,6 +261,7 @@ export function createProxyServer(
               timeout_seconds: timeoutMs / 1000,
               max_body_bytes: options.bodyLimitBytes,
               ready,
+              maintenance: maintenance(),
             },
     })
       .catch((cause: unknown) => {
@@ -298,6 +317,13 @@ export function createProxyServer(
       ];
     },
     async completeText(body: unknown, signal: AbortSignal) {
+      if (maintenance())
+        throw new HttpError(
+          503,
+          "The proxy is preparing an update.",
+          "server_error",
+          "update_in_progress",
+        );
       const rpc = readyTransport(ready, transport);
       if (!continuations)
         throw new HttpError(

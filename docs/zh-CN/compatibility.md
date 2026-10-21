@@ -4,12 +4,12 @@
 
 重放的助手消息允许内容为 null 或省略内容，包括中断与只有思考内容的轮次。空助手占位消息不会注入新 Codex 线程。本地 profile 接受助手的 `output_text` 分段，并在校验后忽略 `thinking`/`reasoning` 分段，与响应专用的 `reasoning`、`reasoning_content` 字段一致。可见文本与完整工具调用/结果配对会保留；待处理工具结果的关联和策略校验继续生效。
 
-代理一次只面向一个 app-server 契约。当前运行时依赖为在 `package.json` 中精确固定的 `@openai/codex` **0.155.1**。生成的实验性 TypeScript 与 JSON Schema 契约提交在 `protocol/`，版本与生成命令记录于 `protocol/VERSION.json`。默认启动与协议生成都使用包内可执行文件；显式 `--codex-path` 必须报告相同版本。升级 Codex 前必须重新审查契约。
+代理一次只面向一个 app-server 契约。当前运行时依赖为在 `package.json` 中精确固定的 `@openai/codex` **0.163.0**。生成的实验性 TypeScript 与 JSON Schema 契约提交在 `protocol/`，版本与生成命令记录于 `protocol/VERSION.json`。默认启动与协议生成都使用包内可执行文件；显式 `--codex-path` 必须报告相同版本。升级 Codex 前必须重新审查契约。
 
 | 兼容边界 | 当前行为 | Codex 升级影响 |
 | --- | --- | --- |
 | JSON-RPC 与生成类型 | 使用固定包和 `--experimental` 生成；`npm run check:protocol` 将临时重新生成结果与已提交契约比较。 | 修改翻译或策略代码前审查 method、notification 与字段变化；使用 `npm run generate:protocol` 重新生成，不手工修改生成文件。 |
-| 模型目录与直接客户端函数 | 0.155.1 使用临时 Responses Lite 覆盖。 | 删除覆盖前重新验证直接及并行函数调用；Schema 通过不能证明模型行为。 |
+| 模型目录与直接客户端函数 | 0.163.0 使用临时 Responses Lite 覆盖。 | 删除覆盖前重新验证直接及并行函数调用；Schema 通过不能证明模型行为。 |
 | Codex home 与鉴权 | 所有 root 共用代理专属 Codex home，只从普通 Codex home 同步 `auth.json`。 | 新版本复用该 home 前审查磁盘缓存、配置格式与 token 处理。 |
 | 续写状态 | 每个 root 使用独立、schema 版本为 0 的持久响应存储。 | 审查记录格式与重启行为；不兼容格式需要显式迁移或拒绝，不能静默改写。 |
 
@@ -21,11 +21,13 @@ WorkBuddy 的连接探测包含 `max_tokens`。两个 token 上限字段可以�
 
 ## 临时模型目录覆盖
 
-Codex 0.155.1 可能把标记为 `use_responses_lite` 的模型放入 code mode，使客户端函数变成嵌套回调。代理将 `models_cache.json` 克隆为 `models.no-responses-lite.json`，把所有模型的 `use_responses_lite` 设为 `false`，并从使用 Responses Lite 的条目中删除 `tool_mode`。来源缓存仍由 Codex 管理，不会被修改。
+Codex 0.163.0 可能把标记为 `use_responses_lite` 的模型放入 code mode，使客户端函数变成嵌套回调。代理将 `models_cache.json` 克隆为 `models.no-responses-lite.json`，把所有模型的 `use_responses_lite` 设为 `false`，并从使用 Responses Lite 的条目中删除 `tool_mode`。覆盖步骤不会修改来源缓存；刷新步骤按下述规则替换目录。
 
 所选 home 的 `config.toml` 会加入带标记的顶层 `model_catalog_json` 配置并指向克隆文件；这会替换此前的顶层模型目录选择，但保留其他配置。该覆盖只适用于当前固定版本。只有在完成运行时审查并通过 opt-in live contract、确认直接批量客户端函数正常后才能删除。
 
-每个新代理进程启动时，会通过临时 Codex home 中的私有 app-server 做一次有界的目录刷新。只有固定客户端版本写出的非空有效新缓存才会替换所选缓存。随后重建克隆文件并重启私有 app-server，使启动期目录选择生效。刷新失败时保留旧缓存并记录警告；ready 仍要求存在可用覆盖。同一代理进程内的 app-server 恢复不会重复刷新。`GET /v1/models` 使用该进程固定的最终目录，不启动模型 turn。
+API key 登录时，启动通过 `codex debug models --bundled` 读取当前二进制的完整内置目录，因为此模式不会写出远程 ChatGPT 目录缓存。替换的元数据明确标记 `source: "bundled"`，不伪造远程抓取时间或 ETag，保留原生模型指令与能力，并继续应用 Responses Lite 覆盖。目录中列出模型不代表第三方服务一定支持它。ChatGPT 登录仍沿用上述远程刷新流程。
+
+ChatGPT 登录时，每个新代理进程启动时，会通过临时 Codex home 中的私有 app-server 做一次有界的目录刷新。只有固定客户端版本写出的非空有效新缓存才会替换所选缓存。随后重建克隆文件并重启私有 app-server，使启动期目录选择生效。刷新失败时保留旧缓存并记录警告；ready 仍要求存在可用覆盖。同一代理进程内的 app-server 恢复不会重复刷新。`GET /v1/models` 使用该进程固定的最终目录，不启动模型 turn。
 
 ## Home、凭据与续写状态
 
@@ -35,7 +37,7 @@ Codex 0.155.1 可能把标记为 `use_responses_lite` 的模型放入 code mode�
 | 鉴权来源 | `--auth-source`、`$CODEX_HOME` 或普通本地 Codex home | 默认 reuse 只复制缺失或严格更新的凭据，不发起登录/退出，也不写回。`--sync-auth never` 保留隔离凭据；`--auth-mode independent` 启用独立登录。共享轮换 refresh token 仍可能冲突。 |
 | 续写存储 | `~/.codex-openai-proxy` 下按 root hash 分区，或 `--state-dir` | 保存不透明响应到 thread 的映射和待处理客户端工具调用 30 天。当前 schema 为 0；格式错误或未知版本的记录不受信任。卸载不会自动删除该状态。 |
 
-固定的 0.155.1 运行时可以复用代理 home。持久文件名与状态 schema 保持不变，模型目录覆盖会保留未知缓存元数据。后续 Codex 版本必须重新审查。鉴权与续写的用户行为见[客户端 API](client-api.md)。
+固定的 0.163.0 运行时可以复用代理 home。上游缓存的身份元数据会保留，并在启动时尝试刷新。代理持久文件名与状态 schema 保持不变，模型目录覆盖会保留未知缓存元数据。后续 Codex 版本必须重新审查。鉴权与续写的用户行为见[客户端 API](client-api.md)。
 
 ## 验证边界
 

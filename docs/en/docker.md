@@ -13,7 +13,7 @@ For an existing local Codex login, follow the key creation steps in the
 containing `auth.json`, and start the standard deployment:
 
 ```sh
-docker compose -f compose.yaml -f compose.local-auth.yaml up -d --build
+npm run deploy -- -f compose.yaml -f compose.local-auth.yaml
 docker compose -f compose.yaml -f compose.local-auth.yaml ps
 ```
 
@@ -58,10 +58,21 @@ retains password authentication, including when accessed through the gateway.
 
 ## Upgrade and backup
 
-Use the same Compose files, environment, and project name for every upgrade.
-Check the console for active requests before replacing the service, since a
-restart interrupts them. Then run `docker compose ... up -d --build` with the
-same options used to start it and verify `/ready` with a client key.
+Use the same Compose files, environment file, and project name with `npm run deploy -- ...` for subsequent deployments. The script builds the checkout and installs or replaces only this checkout's user crontab entry. Check the active count before the first migration from an older bridge: older versions lack the admission gate, so that bootstrap requires an idle maintenance window.
+
+## Automatic midnight updates
+
+The repository script `scripts/deploy-auto-update.mjs` runs independently of Codex App. On macOS/Linux, `npm run deploy -- ...` installs a `00:00` job in the deploying user's crontab, using the host's local time zone. The host must be awake, cron running, and that user able to use Node.js 22+, npm, Git and Docker Compose without interactive login. Plain `docker compose up` remains a manual deployment and does not install scheduling. Complete an independent device-code login before retrying deployment if initial readiness fails.
+
+Pass Compose global arguments after `--`, for example `npm run deploy -- --env-file .env -f compose.yaml -f compose.local-auth.yaml -p codex-agent-bridge`. Persist interpolation settings in the Compose environment file; cron does not inherit your interactive shell exports. Do not put secrets in arguments. Keep the checkout and tool paths installed in place; rerun the deployment command after moving either. Windows scheduling is not supported.
+
+At midnight the script checks `/health`: a busy, unhealthy or already maintained bridge is skipped until the next night. It checks the npm stable Codex release and never downgrades. A newer release is installed in a temporary source snapshot, including local nonignored edits, and must pass protocol regeneration, formatting, lint, offline tests, package checks, image build, native SQLite and runtime-version checks. The checkout and its pinned version are untouched. No model generations are invoked by these checks. Failed compatibility gates require a maintainer to adapt the repository; the old service continues running.
+
+Immediately before replacement, the updater creates `/data/state/update-maintenance` exclusively. The proxy rejects new Chat Completions and internal text completions with HTTP 503 `update_in_progress`; admitted requests drain normally. The updater confirms idle within 60 seconds or aborts. After replacement, it probes readiness and the model catalog through the gateway, restoring the previous image on failure. Volumes are retained. Image rollback cannot reverse an upstream persisted-state migration: keep backups, and review upstream compatibility before relying on unattended upgrades for valuable state. Existing sleeping conversations resume normally after deployment; only executing requests prevent replacement.
+
+Private scheduler state and generic failure output live in ignored `.auto-update/`; `update.log` is mode 600. Inspect that file after failures. Reproduce compatibility failures manually with `npm run update:codex -- EXACT_VERSION` in a separate checkout for full diagnostics. No missed-midnight catch-up runs occur. A host lock prevents overlapping updates. After a killed updater, confirm no updater is running before removing `.auto-update/lock` and the state-volume `update-maintenance` marker. To uninstall, use `crontab -e` and remove only the line ending in this checkout's `# codex-agent-bridge:...` marker; other entries are preserved.
+
+## Backup
 
 Back up the Codex home and state volumes together while the service is stopped.
 The state volume contains the administrator database, its encryption key, and
