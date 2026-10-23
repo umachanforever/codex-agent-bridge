@@ -32,7 +32,7 @@ Install from this repository with Node.js or Docker Compose. The deployment comm
 
 ## Requirements
 
-- Node.js 22+ (Node 24 recommended), npm, and a local Codex login. The bundled app-server is pinned to Codex 0.163.0; see the [compatibility review](docs/en/compatibility.md).
+- Node.js 22+ (Node 24 recommended), npm, and a local Codex login. The bundled app-server is pinned to Codex 0.164.0; see the [compatibility review](docs/en/compatibility.md).
 - Docker Compose v2 for container deployment.
 
 ## Run from source

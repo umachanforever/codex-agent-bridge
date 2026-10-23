@@ -70,7 +70,7 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "0.1.100",
-    "@openai/codex": "0.163.0",
+    "@openai/codex": "0.164.0",
     "better-sqlite3": "^13.0.3",
     "csv-parse": "7.0.2",
     "pdfjs-dist": "4.10.38",

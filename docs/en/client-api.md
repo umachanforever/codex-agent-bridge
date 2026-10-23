@@ -27,7 +27,7 @@ Notes:
 
 ### Temporary Responses Lite override
 
-For the pinned Codex `0.163.0` runtime, startup installs a temporary model-catalog override so declared client functions remain direct Responses tools instead of nested code-mode callbacks. Startup refreshes the catalog without starting a model turn; on failure it retains the previous usable cache. The catalog stays fixed for the life of that proxy process. See [Codex compatibility](compatibility.md#temporary-model-catalog-override) for implementation and upgrade consequences.
+For the pinned Codex `0.164.0` runtime, startup installs a temporary model-catalog override so declared client functions remain direct Responses tools instead of nested code-mode callbacks. Startup refreshes the catalog without starting a model turn; on failure it retains the previous usable cache. The catalog stays fixed for the life of that proxy process. See [Codex compatibility](compatibility.md#temporary-model-catalog-override) for implementation and upgrade consequences.
 
 ## Instruction configuration
 

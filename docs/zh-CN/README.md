@@ -32,7 +32,7 @@ Codex Agent Bridge 通过兼容 OpenAI Chat Completions 的接口，将本地的
 
 ## 环境要求
 
-- Node.js 22+（推荐 Node 24）、npm，以及一次本地 Codex 登录。内置 app-server 固定为 Codex 0.163.0，见[兼容性审查](compatibility.md)。
+- Node.js 22+（推荐 Node 24）、npm，以及一次本地 Codex 登录。内置 app-server 固定为 Codex 0.164.0，见[兼容性审查](compatibility.md)。
 - Docker Compose v2（仅在使用 Docker 部署时需要）。
 
 ## 从源码运行

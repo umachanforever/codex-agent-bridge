@@ -1,8 +1,8 @@
 # Compatibility contract
 
-This contract targets `codex-cli 0.163.0`, pinned by the exact `@openai/codex` runtime dependency. The checked-in TypeScript and JSON Schema artifacts were generated from that package-owned executable with `--experimental`; they are the wire-type source of truth. Regenerate them with `npm run generate:protocol` after changing the package pin.
+This contract targets `codex-cli 0.164.0`, pinned by the exact `@openai/codex` runtime dependency. The checked-in TypeScript and JSON Schema artifacts were generated from that package-owned executable with `--experimental`; they are the wire-type source of truth. Regenerate them with `npm run generate:protocol` after changing the package pin.
 
-The [0.163.0 compatibility review](../docs/reference/codex-app-server.md#pinned-compatibility-note) keeps the public HTTP surface unchanged. New account, model, thread and turn metadata is not exposed. Removed rollback methods were not used by the proxy. Existing proxy homes and schema-version-0 continuation stores require no proxy migration; the upstream model cache is refreshed on startup. The Responses Lite catalog workaround remains enabled.
+The [0.164.0 compatibility review](../docs/reference/codex-app-server.md#pinned-compatibility-note) keeps the public HTTP surface unchanged. Added turn metadata patches, hooks, storage defaults, MCP metadata, image file references, and sampling/diagnostic methods remain private. Existing proxy homes and schema-version-0 continuation stores require no proxy migration; the upstream model cache is refreshed on startup. The Responses Lite catalog workaround remains enabled.
 
 ## Request fields
 
