@@ -28,7 +28,7 @@
 
 system 消息不会通过 `thread/inject_items` 注入，因为已由 `baseInstructions` 提供；客户端 developer 消息仍保留为 developer 历史，其他历史保持内容和顺序。Codex 会把基础指令表示为上游 developer 指令，因此代理不保证 system 与 developer 之间额外的优先级。
 
-原生 thread 续写保留已有基础指令与历史。续写 transcript 中的新 system 消息不会修改该 thread，包括重启后的续写。要修改指令，请去掉 `previous_response_id`，并避免通过隐式待处理工具结果续写，发送一个新请求。
+原生 thread 续写保留已有基础指令与历史。显式携带的 system 消息会与已保存的指令哈希比较；变化时用所提供的 transcript 创建新 thread，不再静默沿用旧指令。省略 system 时继承已有指令，并保留其身份供后续比对。旧检查点缺少指令哈希时，携带 system 也会创建新 thread。修改指令时须发送完整上下文，以便新 thread 保留任务历史；此回退不消耗原待处理工具批次。
 
 ## 使用 OpenAI 客户端
 
@@ -227,3 +227,7 @@ app-server 的 `serverOverloaded` 映射为 HTTP 503、`error.type: "server_erro
 | 登录/启动期限 | 固定 5 分钟 |
 
 请求与本地活动 Codex thread 竞争时会改用新 thread；app-server 自身报告 thread 活动时仍返回 409 `thread_busy`。app-server 崩溃后代理会有限退避重启，此时 `/ready` 返回 503。请求期限会取消下游工作、关闭尚未结束的响应并释放并发槽，包括因客户端不再读取而阻塞的 stream。
+
+客户端回传仍待处理的工具结果、且没有新的用户消息时，代理会在续跑 turn 中加入工具交接说明。Codex 将内部 `turn/interrupt` 记录为用户中断；说明会澄清此次暂停来自工具交接，并要求按原用户指令继续。若有新的用户输入则原样使用，不覆盖用户指令；已断连或取消的请求不会自动续跑。
+
+代理工具交接以外的上游 turn 中断返回 `app_server_interrupted`：SSE 提交前返回 HTTP 502，已有部分输出时发送 SSE error。不会伪装成 token 上限 `length` 或成功 `stop`，也不保存 ready 续写检查点。客户端取消仍只终止执行，不自动重试或续跑。

@@ -29,6 +29,8 @@ const SCHEMA_VERSION = 0;
 export interface ThreadBinding {
   /** Absent on existing checkpoints with no generation overrides. */
   generationHash?: string;
+  /** Absent on legacy checkpoints whose instruction identity is unknown. */
+  instructionsHash?: string;
   model: string;
   reasoningEffort?: string;
   cwd: string;
@@ -531,6 +533,8 @@ function isResponseRecord(value: unknown): value is ResponseRecord {
     typeof record.policyHash === "string" &&
     (record.generationHash === undefined ||
       typeof record.generationHash === "string") &&
+    (record.instructionsHash === undefined ||
+      typeof record.instructionsHash === "string") &&
     typeof record.state === "string" &&
     VALID_RECORD_STATES.has(record.state) &&
     typeof record.createdAt === "number" &&

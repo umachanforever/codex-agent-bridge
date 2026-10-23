@@ -58,6 +58,8 @@ Keep the final command running.
 
 Authentication sync copies only `auth.json`, not personal Codex configuration. A custom provider requires separate configuration in the proxy's isolated Codex home; see [authentication](docs/en/client-api.md#authentication). The `codex-openai-proxy` CLI alias and existing default state paths remain compatible. This project's packaged output also provides the `codex-agent-bridge` command.
 
+Tool-result continuations clarify internal proxy interruptions so models do not mistake a tool handoff for a user stop request. Changed system instructions start a fresh thread; unexpected upstream interruptions return an explicit error.
+
 API-key deployments refresh the model catalog from the installed Codex binary at startup, so new bundled models appear after an upgrade.
 
 ## Deploy with Docker

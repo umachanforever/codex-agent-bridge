@@ -78,3 +78,7 @@ before model work. File IDs and local paths are never resolved by the proxy.
 On native Windows, the proxy reads effective configuration for the request's canonical working directory before starting or resuming a thread. It supplies `windows.sandbox = "unelevated"` only when neither user/project configuration nor managed requirements select a backend. A failed or malformed `config/read` fails the request before execution; the default is a per-thread override, never a persisted or process-wide rewrite.
 
 The [security model](security.md) covers local access, persisted data, and sensitive plaintext logs. Contributor commands and offline versus live verification are in the [repository guide](development.md).
+
+## Continuation instruction identity
+
+Response records optionally carry `instructionsHash`, the canonical hash of joined system base instructions. Existing schema-0 records remain readable. Supplied system instructions must match this identity for native reuse; a mismatch or unknown legacy identity selects fresh execution with `continuation_instructions_mismatch`. Omitted system messages inherit the recorded identity. No instruction plaintext is added to the store or fallback diagnostics. Non-handoff upstream interruptions terminate with `app_server_interrupted` and do not create ready mappings.

@@ -970,3 +970,36 @@ test("a disposed coordinator rejects tool callbacks until transport close", asyn
     rpc.close();
   }, "codex-proxy-state-");
 });
+
+test("instruction identity survives persistence while legacy records remain readable", async () => {
+  await withTempDir(async (directory) => {
+    const store = new ResponseStore(directory);
+    store.put({
+      responseId: "legacy",
+      threadId: "legacy-thread",
+      state: "ready",
+      ...binding,
+    });
+    store.put({
+      responseId: "current",
+      threadId: "current-thread",
+      state: "ready",
+      ...binding,
+      instructionsHash: bindingHash("synthetic instructions"),
+    });
+    const reloaded = new ResponseStore(directory);
+    assert.equal(reloaded.get("legacy")?.instructionsHash, undefined);
+    assert.equal(
+      reloaded.get("current")?.instructionsHash,
+      bindingHash("synthetic instructions"),
+    );
+    const path = join(directory, "continuations.json");
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    saved.records.find(
+      (record: { responseId: string }) => record.responseId === "current",
+    ).instructionsHash = 42;
+    await writeFile(path, JSON.stringify(saved));
+    assert.equal(new ResponseStore(directory).get("current"), undefined);
+    assert.equal(new ResponseStore(directory).get("legacy")?.state, "ready");
+  });
+});

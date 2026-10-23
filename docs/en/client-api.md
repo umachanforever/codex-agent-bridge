@@ -37,7 +37,7 @@ Personal Codex configuration does not propagate through authentication sync: the
 
 System messages are excluded from `thread/inject_items` because they are supplied through `baseInstructions`; the pinned runtime filters literal system history out of model requests. Client `developer` messages remain developer history, and other history keeps its content and order. Codex represents its base instructions as developer instructions upstream, so the proxy does not guarantee separate system-over-developer priority. System messages anywhere in a fresh transcript contribute to the thread-wide base instructions.
 
-Native thread reuse retains its base instructions and history. A system message in a continuation transcript does not update that thread's instructions, including after a restart. To change instructions, send the intended transcript as a fresh request without `previous_response_id` or an implicitly continued pending tool-result batch.
+Native thread reuse retains its base instructions and history. Supplied system messages are compared against the stored instruction hash: a change starts a fresh thread with the supplied transcript instead of silently retaining the old instructions. Omission inherits the existing instructions and preserves their identity for later continuations. Legacy checkpoints without an instruction hash also start fresh when system messages are supplied. Send the full intended transcript when changing instructions so fresh execution retains its context; pending source tool batches are left unconsumed by this fallback.
 
 ## Use an OpenAI client
 
@@ -294,3 +294,7 @@ Bare CLI limits (all configurable via CLI flags; deployment profiles override th
 
 A request contending with a locally active Codex thread executes on a fresh thread; 409 `thread_busy` remains for a thread app-server itself reports active. If app-server crashes, the proxy retries with bounded backoff while `/ready` returns 503.
 The request deadline aborts downstream work and closes any response that is still open, including a stream blocked by a client that stopped reading; its concurrency slot is then released.
+
+When a client returns results for a live pending tool batch without a newer user message, the proxy adds a handoff clarification to the resumed turn. Codex records the internal `turn/interrupt` as a user-abort marker; the clarification identifies it as a tool handoff and asks the model to continue under the existing user instructions. Explicit newer user input is preserved verbatim; disconnected or cancelled requests are not automatically resumed.
+
+An upstream interrupted turn outside the proxy's tool handoff returns `app_server_interrupted`: HTTP 502 before SSE commitment, or an SSE error after partial output. It is not reported as token-limit `length` or successful `stop`, and no ready continuation checkpoint is saved. Client cancellation still aborts execution without automatically retrying or continuing it.

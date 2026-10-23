@@ -79,6 +79,7 @@ export type ContinuationFallbackReason =
   | "continuation_model_mismatch"
   | "continuation_reasoning_effort_mismatch"
   | "continuation_generation_mismatch"
+  | "continuation_instructions_mismatch"
   | "continuation_cwd_mismatch"
   | "continuation_tools_mismatch"
   | "continuation_policy_mismatch"
@@ -229,6 +230,7 @@ export async function execute(
   options.rpc.once("close", onClose);
   let disposed = false;
   const binding: ThreadBinding = {
+    instructionsHash: bindingHash(toBaseInstructions(request.messages)),
     model: request.model,
     ...(request.reasoningEffort
       ? { reasoningEffort: request.reasoningEffort }
@@ -296,6 +298,10 @@ export async function execute(
         admission,
         handle,
       );
+      // A delta-only continuation must retain the original instruction identity.
+      if (admission.record.instructionsHash === undefined)
+        delete binding.instructionsHash;
+      else binding.instructionsHash = admission.record.instructionsHash;
       usageBaseline = continuation.usageBaseline;
       instructionSources = continuation.instructionSources;
       // Reuse is reported only after the mapped thread has passed preflight,
@@ -487,6 +493,18 @@ export async function execute(
               yield {
                 ...event,
                 terminalError: await quotaResolver.resolve(event.terminalError),
+              };
+            } else if (event.finishReason === "length") {
+              // Our tool handoff is handled above; an unsolicited interruption is not a token limit.
+              handle.terminal = true;
+              failed = true;
+              yield {
+                terminalError: new HttpError(
+                  502,
+                  "The app-server turn was interrupted before completing.",
+                  "server_error",
+                  "app_server_interrupted",
+                ),
               };
             } else if (event.finishReason) {
               // Persistence is part of successful completion. Do not expose a
@@ -811,6 +829,12 @@ function prepareContinuation(
   } else if (request.terminalToolResults.length) {
     continuationFailure(409, "tool_results_without_pending_call");
   }
+  // Supplied instructions must match the durable thread base. Omission inherits it.
+  if (
+    request.messages.some((message) => message.role === "system") &&
+    stored.instructionsHash !== binding.instructionsHash
+  )
+    return { type: "fresh", reason: "continuation_instructions_mismatch" };
   if (stored.model !== binding.model)
     return { type: "fresh", reason: "continuation_model_mismatch" };
   if (stored.reasoningEffort !== binding.reasoningEffort)
@@ -932,7 +956,7 @@ async function resumeContinuation(
   }
   // Mark success best-effort; the tombstone already blocks replay.
   options.continuations.recordPendingConsumed(admission.responseId);
-  await startTurn(request, options, handle);
+  await startTurn(request, options, handle, true);
   return { usageBaseline: stored.usageTotal, instructionSources };
 }
 
@@ -1067,11 +1091,13 @@ async function startTurn(
   request: ChatRequest,
   options: ChatHandlerOptions,
   handle: TurnHandle,
+  toolHandoff = false,
 ): Promise<void> {
   const last = request.messages.at(-1)!;
   // Only a trailing user message is new turn input. Other messages already
   // supply history, tool-result pairs, or system base instructions; app-server
-  // accepts an empty input list to continue from that context.
+  // accepts empty input for history replay. A proxy-interrupted tool handoff
+  // needs clarification because Codex records it as an intentional user abort.
   const input =
     last.role === "user"
       ? (last.contentParts?.flatMap((part) =>
@@ -1089,7 +1115,15 @@ async function startTurn(
                     : { type: "audio", url: part.url },
               ],
         ) ?? [{ type: "text", text: last.content!, text_elements: [] }])
-      : [];
+      : toolHandoff
+        ? [
+            {
+              type: "text",
+              text: "[Proxy tool handoff] The previous turn was paused by the proxy to execute the client tools, not by a new user stop request. Their results are now available above. Continue the existing task using those results and the latest user instructions; do not treat the handoff interruption itself as a request to stop. Honor any actual user cancellation or limits.",
+              text_elements: [],
+            },
+          ]
+        : [];
   const turn = asRecord(
     await options.rpc.request(
       "turn/start",

@@ -1133,9 +1133,8 @@ function createScriptedTransport(
           sendToolBatch(0);
           return;
         }
-        if (input.length === 0) {
-          // A tool-result continuation starts with no user input; the injected
-          // function_call/function_call_output pairs are the model input. Their
+        if (input.length === 0 || prompt.startsWith("[Proxy tool handoff]")) {
+          // Tool results arrive as injected pairs, optionally with handoff clarification. Their
           // shape is asserted by the tests that own it, so this fake reads only
           // the batch they answered to decide what to send next.
           const pairs = (injected.get(threadId) ?? []) as Array<

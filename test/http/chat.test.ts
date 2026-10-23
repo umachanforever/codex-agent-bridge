@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, vi } from "vitest";
@@ -4260,7 +4260,7 @@ test("request policies map exactly, bind continuations, and honor managed denial
           ...request,
           previous_response_id: firstBody.id,
           messages: [
-            { role: "system", content: "changed continuation base" },
+            { role: "system", content: "" },
             { role: "user", content: "continue" },
           ],
         }),
@@ -4851,4 +4851,80 @@ test("an aborted request rejects execution before any RPC", async () => {
       fixture.fake.close();
     }
   }, "codex-execute-aborted-");
+});
+
+test("unexpected upstream interruptions expose an error and never save a successful continuation", async () => {
+  for (const stream of [false, true]) {
+    await withTempDir(async (directory) => {
+      const fake = createFakeTransport({
+        onMessage(raw, send) {
+          const message = raw as { id: number; method: string };
+          if (message.method === "thread/start")
+            send(
+              protocolResponse(
+                "thread/start",
+                message.id,
+                protocolThreadStartResponse(protocolThread("thr_interrupted")),
+              ),
+            );
+          if (message.method === "turn/start") {
+            send(
+              protocolResponse("turn/start", message.id, {
+                turn: protocolTurn("turn_interrupted", "inProgress"),
+              }),
+            );
+            if (stream)
+              send(
+                protocolNotification({
+                  method: "item/agentMessage/delta",
+                  params: {
+                    threadId: "thr_interrupted",
+                    turnId: "turn_interrupted",
+                    itemId: "partial",
+                    delta: "Partial response",
+                  },
+                }),
+              );
+            interruptTurn(send, "thr_interrupted", "turn_interrupted", {
+              includeUsage: false,
+            });
+          }
+        },
+      });
+      const { origin, proxy } = await startProxyWithTransport(fake.rpc, {
+        root: directory,
+        stateDir: directory,
+      });
+      try {
+        const response = await fetch(`${origin}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "synthetic",
+            stream,
+            messages: [{ role: "user", content: "synthetic request" }],
+          }),
+        });
+        if (stream) {
+          const body = await response.text();
+          assert.equal(response.status, 200);
+          assert.match(body, /app_server_interrupted/);
+          assert.doesNotMatch(body, /"finish_reason":"(?:stop|length)"/);
+        } else {
+          assert.equal(response.status, 502);
+          assert.equal(
+            ((await response.json()) as { error: { code: string } }).error.code,
+            "app_server_interrupted",
+          );
+        }
+        await assert.rejects(
+          readFile(join(directory, "continuations.json"), "utf8"),
+          { code: "ENOENT" },
+        );
+      } finally {
+        await proxy.close();
+        fake.close();
+      }
+    });
+  }
 });

@@ -56,6 +56,8 @@ node dist/bin.js serve --agent-service-model gpt-6-luna --admin-port 8789
 
 鉴权同步仅复制 `auth.json`，不会复制个人 Codex 配置。自定义 provider 需要在代理隔离的 Codex home 中单独配置，详见[鉴权说明](client-api.md#鉴权)。`codex-openai-proxy` CLI 别名与既有的默认 state 路径保持兼容。本项目打包产物同时提供 `codex-agent-bridge` 命令。
 
+工具结果续接会澄清桥接层的内部中断，避免模型把工具交接误当作用户要求停止。system 指令变化会创建新 thread；非工具交接导致的上游中断会明确报错。
+
 API key 部署会在启动时读取当前 Codex 二进制的模型目录，升级后可显示新版内置模型。
 
 ## 使用 Docker 部署

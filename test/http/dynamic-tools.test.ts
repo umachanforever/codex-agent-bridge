@@ -536,9 +536,13 @@ class ToolAppServer {
           // The model request behind these calls ran whether or not app-server
           // attributed it, so every later cumulative total must include it.
           this.#attributeRequest(threadId);
-        } else if (input.length === 0) {
-          // A tool-result continuation starts its turn with no user input; the
-          // injected function_call_output pairs are the model-visible input.
+        } else if (
+          input.length === 0 ||
+          (input[0] as { text?: string })?.text?.startsWith(
+            "[Proxy tool handoff]",
+          )
+        ) {
+          // Tool results arrive as injected pairs, with handoff clarification on native resume.
           if (this.replayRawHistoryWithNewCallAfterResults) {
             this.replayRawHistoryWithNewCallAfterResults = false;
             const rawCalls = [
@@ -864,9 +868,15 @@ test("parallel fragmented tool calls interrupt the turn and continue by injectin
       assert.equal(fake.injected[0]!.arguments, '{"fragment":"b"}');
       assert.equal(fake.injected[1]!.output, "ok");
       assert.equal((fake.injected[3]!.output as string).length, 256 * 1024);
-      // The continuation turn started with no user input: the injected pairs
-      // are the model-visible input.
-      assert.deepEqual(fake.turnInputs.at(-1), []);
+      // A real Codex interrupt records a user-abort marker: native handoff must clarify it.
+      const handoff = fake.turnInputs.at(-1) as Array<{
+        type: string;
+        text: string;
+      }>;
+      assert.equal(handoff.length, 1);
+      assert.equal(handoff[0]!.type, "text");
+      assert.match(handoff[0]!.text, /previous turn was paused by the proxy/);
+      assert.match(handoff[0]!.text, /Honor any actual user cancellation/);
 
       const resumedResponse = await postChatCompletion(origin, {
         model: "m",
@@ -3366,3 +3376,83 @@ test("a server that never flushes usage leaves it omitted rather than estimated"
     }
   }, "codex-dynamic-tools-");
 });
+
+test("changed system instructions isolate a pending tool continuation instead of silently retaining old instructions", async () => {
+  await withTempDir(async (directory) => {
+    const fake = new ToolAppServer();
+    const { origin, proxy } = await startProxy(directory, fake);
+    const tools = [
+      { type: "function", function: { name: "first", parameters: {} } },
+      { type: "function", function: { name: "second", parameters: {} } },
+    ];
+    try {
+      const initial = (await (
+        await postChatCompletion(origin, {
+          model: "m",
+          tools,
+          messages: [
+            { role: "system", content: "Original instructions" },
+            { role: "user", content: "use tools" },
+          ],
+        })
+      ).json()) as CompletionBody;
+      const calls = initial.choices[0]!.message.tool_calls;
+      const changed = await postChatCompletion(origin, {
+        model: "m",
+        tools,
+        previous_response_id: initial.id,
+        messages: [
+          { role: "system", content: "Updated instructions" },
+          ...toolTranscript(calls),
+        ],
+      });
+      assert.equal(changed.status, 200);
+      assert.equal(
+        ((await changed.json()) as CompletionBody).x_codex?.threadReused,
+        false,
+      );
+      assert.equal(
+        persistedRecords(directory).find(
+          (record) => record.responseId === initial.id,
+        )?.state,
+        "pending_tool",
+      );
+      // Omitting system messages means inherit the stored instructions; persist that identity on reuse.
+      const continued = (await (
+        await postChatCompletion(origin, {
+          model: "m",
+          tools,
+          previous_response_id: initial.id,
+          messages: toolTranscript(calls),
+        })
+      ).json()) as CompletionBody;
+      assert.equal(continued.x_codex?.threadReused, true);
+      const same = (await (
+        await postChatCompletion(origin, {
+          model: "m",
+          tools,
+          previous_response_id: continued.id,
+          messages: [
+            { role: "system", content: "Original instructions" },
+            { role: "user", content: "continue" },
+          ],
+        })
+      ).json()) as CompletionBody;
+      assert.equal(same.x_codex?.threadReused, true);
+      const readyChanged = (await (
+        await postChatCompletion(origin, {
+          model: "m",
+          tools,
+          previous_response_id: same.id,
+          messages: [
+            { role: "system", content: "New ready instructions" },
+            { role: "user", content: "continue" },
+          ],
+        })
+      ).json()) as CompletionBody;
+      assert.equal(readyChanged.x_codex?.threadReused, false);
+    } finally {
+      await proxy.close();
+    }
+  });
+}, 10_000);
