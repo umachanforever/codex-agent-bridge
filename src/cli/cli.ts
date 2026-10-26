@@ -44,7 +44,7 @@ Options:
   --port <port>                 TCP port, or 0 for an ephemeral port (default: 8787)
   --root <directory>            Allowed working-directory root (default: launch directory)
   --codex-path <path>           Override the package-owned Codex executable
-  --subagents <true|false>      Allow child-agent spawning (default: false)
+  --subagents <true|false>      Allow child-agent spawning (default: true)
   --codex-home <directory>      Codex home for the spawned app-server
                                 (default: ${DEFAULT_CODEX_HOME_DESCRIPTION})
   --sync-auth <always|never>
@@ -59,9 +59,9 @@ Options:
   --max-requests <count>        Maximum concurrent requests; 0 disables the cap (default: 100)
   --local-bridge-model <model>  Enable local compatibility defaults and codex-cli alias
                                 Requires CODEX_BRIDGE_TOKEN or CODEX_BRIDGE_TOKEN_FILE
-  --local-host-tools <true|false> Keep built-in tools enabled with client tools in local profile
+  --local-host-tools <true|false> Legacy compatibility flag; built-in tools are enabled by default
                                 (default: false; native host access requires native deployment)
-  --agent-service-model <model> Authenticated compatibility with host tools disabled by default
+  --agent-service-model <model> Service compatibility with full-access host tools by default
                                 Mutually exclusive with --local-bridge-model
   --log-level <level>           debug, info, warn, or error (default: info)
   --auth-mode <reuse|independent> Reuse local authentication by default; login is opt-in
@@ -193,6 +193,7 @@ class AppServerSupervisor {
       const next = await startAppServer({
         codexPath: this.#options.codexPath,
         subagentsEnabled: this.#options.subagentsEnabled,
+        interactions: this.#proxy.interactions,
         codexHome: this.#options.codexHome,
         seedAuthFrom: seedSource,
         root: this.#options.root,
@@ -407,8 +408,8 @@ async function runServer(options: ServeOptions, log: Logger): Promise<number> {
     codex_version: PINNED_CODEX_VERSION,
     host: address.address,
     port: address.port,
-    default_sandbox: "disabled",
-    default_web_search: "disabled",
+    default_sandbox: "danger-full-access",
+    default_web_search: "live",
     subagents_enabled: options.subagentsEnabled,
     ready: false,
   });

@@ -23,11 +23,12 @@ import {
   startAppServer,
   writeBackAuthCredentials,
 } from "../../src/app-server/app-server.js";
+import { InteractionBroker } from "../../src/app-server/interactions.js";
 import { createLogger } from "../../src/core/logger.js";
 import { RESPONSES_LITE_OVERRIDE_CATALOG_FILENAME } from "../../src/app-server/responses-lite-override.js";
 import { fakeCodexScript } from "../support/fake-codex.js";
 import { silentLogger } from "../support/logger.js";
-import { waitForFile, waitForFileText } from "../support/poll.js";
+import { waitFor, waitForFile, waitForFileText } from "../support/poll.js";
 import {
   protocolResponse,
   protocolServerRequest,
@@ -395,20 +396,20 @@ test("package Codex uses Node while explicit executables remain direct", () => {
   });
 });
 
-test("app-server arguments disable subagents by default and support opt-in", () => {
+test("app-server arguments enable subagents by default and support opt-out", () => {
   assert.deepEqual(appServerArguments(), [
-    "app-server",
-    "-c",
-    "agents.enabled=false",
-    "-c",
-    "features.multi_agent=false",
-  ]);
-  assert.deepEqual(appServerArguments(true), [
     "app-server",
     "-c",
     "agents.enabled=true",
     "-c",
     "features.multi_agent=true",
+  ]);
+  assert.deepEqual(appServerArguments(false), [
+    "app-server",
+    "-c",
+    "agents.enabled=false",
+    "-c",
+    "features.multi_agent=false",
   ]);
 });
 
@@ -1158,5 +1159,68 @@ testWithPosixExecutable(
         ),
       );
     }, "app-server-version-test-");
+  },
+);
+
+testWithPosixExecutable(
+  "app-server leaves console-owned callbacks pending until their human reply",
+  async () => {
+    await withTempDir(async (directory) => {
+      const executable = join(directory, "codex");
+      const callback = protocolServerRequest({
+        id: "console_input",
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "console_thread",
+          turnId: "console_turn",
+          itemId: "console_item",
+          questions: [],
+          isBlocking: true,
+          autoResolutionMs: null,
+        },
+      });
+      await writeFile(
+        executable,
+        fakeCodexScript({
+          version: PINNED_CODEX_VERSION,
+          onLine: (message) =>
+            `if (${message}.method === "fixture/ask") console.log(JSON.stringify(${JSON.stringify(callback)}));`,
+        }),
+      );
+      await chmod(executable, 0o755);
+      const interactions = new InteractionBroker();
+      const logs: unknown[] = [];
+      const app = await startAppServer({
+        codexPath: executable,
+        root: directory,
+        startupTimeoutMs: 1000,
+        shutdownTimeoutMs: 100,
+        interactions,
+        log: createLogger("info", (entry) => logs.push(entry.event)),
+      });
+      const controller = new AbortController();
+      const dispose = interactions.bind(
+        app.rpc,
+        "console_thread",
+        "console_request",
+        controller.signal,
+      );
+      try {
+        app.rpc.notify("fixture/ask");
+        await waitFor(
+          () => interactions.list().length === 1,
+          () => "console-owned input",
+          2000,
+        );
+        assert.equal(logs.includes("app_server_request_declined"), false);
+        assert.equal(
+          interactions.resolve(interactions.list()[0]!.id, { answers: {} }),
+          true,
+        );
+      } finally {
+        dispose();
+        await app.stop();
+      }
+    });
   },
 );

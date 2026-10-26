@@ -67,6 +67,7 @@ export interface PolicyRequirements {
 
 /** The validated request-side x_codex policy extension. */
 export interface RequestPolicy {
+  interactionId?: string | undefined;
   cwd?: string | undefined;
   sandbox?: SandboxMode | undefined;
   webSearch?: WebSearchMode | undefined;
@@ -168,7 +169,7 @@ export function validateRequestPolicy(value: unknown): RequestPolicy {
       "x_codex",
       "x_codex must be an object.",
     );
-  const allowed = new Set(["cwd", "sandbox", "web_search"]);
+  const allowed = new Set(["cwd", "sandbox", "web_search", "interaction_id"]);
   if (Object.keys(extension).some((key) => !allowed.has(key)))
     throw new PolicyError(
       "invalid_x_codex",
@@ -183,6 +184,18 @@ export function validateRequestPolicy(value: unknown): RequestPolicy {
       "invalid_cwd",
       "x_codex.cwd",
       "x_codex.cwd must be a non-empty string.",
+    );
+  if (
+    extension.interaction_id !== undefined &&
+    (typeof extension.interaction_id !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        extension.interaction_id,
+      ))
+  )
+    throw new PolicyError(
+      "invalid_interaction_id",
+      "x_codex.interaction_id",
+      "interaction_id must be a fresh random UUID v4.",
     );
   const sandbox = validateEnumField(
     extension.sandbox,
@@ -200,6 +213,9 @@ export function validateRequestPolicy(value: unknown): RequestPolicy {
   );
   return {
     ...(typeof extension.cwd === "string" ? { cwd: extension.cwd } : {}),
+    ...(typeof extension.interaction_id === "string"
+      ? { interactionId: extension.interaction_id }
+      : {}),
     ...(sandbox === undefined ? {} : { sandbox }),
     ...(webSearch === undefined ? {} : { webSearch }),
   };
@@ -259,9 +275,9 @@ export async function resolveEffectivePolicy(
     request.cwd === undefined
       ? root
       : await canonicalizeRequestCwd(request.cwd, root);
-  const sandbox = request.sandbox ?? "disabled";
+  const sandbox = request.sandbox ?? "danger-full-access";
   const threadSandbox = codexSandboxMode(sandbox);
-  const webSearch = request.webSearch ?? "disabled";
+  const webSearch = request.webSearch ?? "live";
   requireAllowed(
     threadSandbox,
     requirements.allowedSandboxModes,

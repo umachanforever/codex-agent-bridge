@@ -320,7 +320,6 @@ test("unmapped controls are accepted with one warning in every profile", () => {
           custom_option: { enabled: true },
         },
         profile === "bare" ? undefined : "synthetic",
-        profile === "agent",
       ),
       createLogger("warn", (entry) => {
         entries.push(entry);
@@ -383,7 +382,7 @@ test("legacy functions and selectors map to native tools and reject ambiguous de
   );
   assert.equal(
     parse(messages, { functions }).requestPolicy.sandbox,
-    "disabled",
+    "danger-full-access",
   );
   for (const extra of [
     { functions: {} },
@@ -407,7 +406,6 @@ test("token caps are validated and ignored with one explicit warning in every pr
       adaptLocalBridgeRequest(
         { ...body, ...extra },
         profile === "bare" ? undefined : "synthetic",
-        profile === "agent",
       );
     for (const field of ["max_tokens", "max_completion_tokens"]) {
       const warnings: unknown[] = [];

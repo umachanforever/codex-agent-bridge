@@ -46,6 +46,8 @@ without intercepting or reparsing response bodies. One terminal record is persis
 request ID. Browser management auth is never accepted as model API authorization.
 See [management](../en/admin.md) for security, retention and authentication reuse details.
 
+The in-memory `InteractionBroker` routes supported human questions and MCP form/URL callbacks to clients that opt into `x_codex.interaction_id`. Execution binds before `turn/start`; observed child threads inherit the original HTTP owner. Poll and reply endpoints require both the client-generated channel UUID and the original API credential fingerprint. Opaque reply ids are consumed once on the original transport; cancellation, completion and transport replacement remove pending callbacks. Interaction requests bypass the completion concurrency cap to prevent deadlock while a completion waits. Unsupported callbacks and requests without opt-in retain fail-closed behavior. The console has no interaction endpoints or UI. See [client interactions](../en/client-api.md#client-interactions).
+
 ## Startup ownership
 
 The proxy uses the exact `@openai/codex` package pin by default and rejects an explicit executable override with a different reported version. It runs app-server in a proxy-owned Codex home, separate from the ordinary Codex CLI home. Default reuse mode synchronizes a strictly newer local `auth.json` unless `--sync-auth never` is set, without launching login/logout or writing back to the source. Only explicit independent mode starts login. The proxy never stores credentials in its continuation records.
@@ -62,7 +64,7 @@ All Codex-owned lifecycle events are response-level `x_codex.activity`, separate
 
 ## Policy boundary
 
-The listener binds only to a validated loopback address and rejects non-loopback `Host` values and requests carrying `Origin`. A request's `x_codex` controls are constrained by the configured canonical root and app-server managed requirements. The proxy rejects a requested policy it cannot apply faithfully; it never relaxes a stricter requirement. The default `disabled` sandbox removes execution environments; built-in filesystem access and hosted web search require explicit allowed selections. Child-agent spawning is a separate process-wide `--subagents` opt-in, independent of per-request policy.
+The listener binds only to a validated loopback address and rejects non-loopback `Host` values and requests carrying `Origin`. A request's `x_codex` controls are constrained by the configured canonical root and app-server managed requirements. The proxy rejects a requested policy it cannot apply faithfully; it never relaxes a stricter requirement. The default `danger-full-access` sandbox enables built-in filesystem and command network access with the child process's OS permissions; hosted Web search defaults to `live` and approval policy prefers `never`. These defaults apply even when compatibility clients supply their own tools. Explicit narrower request settings and managed requirements still apply; a disallowed default is rejected. Explicit `disabled` removes execution environments. Child-agent spawning defaults on and can be disabled process-wide with `--subagents false`. The configured root bounds request `cwd`, not full-access filesystem operations.
 
 Inline user audio maps to app-server `UserInput.audio` data URLs. App-server
 rejects raw `input_file` history and has no file `UserInput` variant, so the

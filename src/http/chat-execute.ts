@@ -1,3 +1,4 @@
+import type { InteractionBroker } from "../app-server/interactions.js";
 import { RpcError, type JsonRpcTransport } from "../app-server/json-rpc.js";
 import { IngressQueue, type IngressEvent } from "../sessions/ingress.js";
 import { matchesTurn } from "../sessions/correlation.js";
@@ -52,6 +53,8 @@ const RAW_RESPONSE_THREADS = new WeakMap<JsonRpcTransport, Set<string>>();
 
 /** Dependencies used by one Chat Completions request. */
 export interface ChatHandlerOptions {
+  interactions?: InteractionBroker | undefined;
+  interactionOwner?: string | undefined;
   /** Request accounting observes normalized metadata, never message bodies. */
   observe?:
     | ((value: { model?: string; usage?: Usage; error?: string }) => void)
@@ -101,6 +104,7 @@ interface TurnHandle {
   rawResponseBoundaries: boolean;
   terminal: boolean;
   lease?: ThreadLease;
+  disposeInteractions?: (() => void) | undefined;
 }
 
 /** Setup output shared by ready and pending-tool continuation paths. */
@@ -267,6 +271,7 @@ export async function execute(
   const cleanup = async (): Promise<void> => {
     if (disposed) return;
     disposed = true;
+    handle.disposeInteractions?.();
     await abort();
     options.signal.removeEventListener("abort", onAbort);
     options.rpc.off("notification", onNotification);
@@ -1093,6 +1098,32 @@ async function startTurn(
   handle: TurnHandle,
   toolHandoff = false,
 ): Promise<void> {
+  if (
+    request.interactionId &&
+    options.interactions?.hasChannel({
+      channel: request.interactionId,
+      owner: options.interactionOwner ?? "",
+    })
+  )
+    throw new HttpError(
+      409,
+      "Interaction channel is already active.",
+      "invalid_request_error",
+      "interaction_channel_busy",
+    );
+  handle.disposeInteractions = request.interactionId
+    ? options.interactions?.bind(
+        options.rpc,
+        handle.threadId!,
+        options.requestId,
+        options.signal,
+        () => handle.turnId,
+        {
+          channel: request.interactionId,
+          owner: options.interactionOwner ?? "",
+        },
+      )
+    : undefined;
   const last = request.messages.at(-1)!;
   // Only a trailing user message is new turn input. Other messages already
   // supply history, tool-result pairs, or system base instructions; app-server

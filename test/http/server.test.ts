@@ -494,7 +494,7 @@ test("zero maxRequests accepts overlapping requests without a local capacity rej
   });
 });
 
-test("local bridge routes aliases and preserves client tool ownership and stricter policy", async () => {
+test("local bridge routes aliases and enables host tools unless explicitly restricted", async () => {
   const previous = process.env.CODEX_BRIDGE_TOKEN;
   process.env.CODEX_BRIDGE_TOKEN = "synthetic-test-key";
   try {
@@ -587,8 +587,8 @@ test("local bridge routes aliases and preserves client tool ownership and strict
         assert.equal(starts[0]?.model, "synthetic-default");
         assert.equal(starts[0]?.sandbox, "danger-full-access");
         assert.equal(starts[0]?.approvalPolicy, "never");
-        assert.deepEqual(starts[1]?.environments, []);
-        assert.equal(starts[1]?.sandbox, "read-only");
+        assert.equal(starts[1]?.environments, undefined);
+        assert.equal(starts[1]?.sandbox, "danger-full-access");
         assert.equal(starts[2]?.sandbox, "read-only");
         assert.equal(starts[2]?.model, "explicit-model");
         const malformed = await post({ x_codex: "bad" });

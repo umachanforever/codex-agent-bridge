@@ -886,6 +886,7 @@ export function registerChatContract(
         const callsBefore = backend!.modelCalls();
         const response = await chat({
           model: model,
+          x_codex: { sandbox: "disabled" },
           messages: [
             {
               role: "user",

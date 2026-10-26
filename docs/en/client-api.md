@@ -241,18 +241,45 @@ Per-request Codex controls live under a nonstandard top-level `x_codex` object:
 | Field        | Values                                                           | Default                 | Notes                                                                             |
 | ------------ | ---------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- |
 | `cwd`        | absolute path                                                    | the configured `--root` | Must be the root or a descendant; symlink escapes and relative paths are rejected |
-| `sandbox`    | `disabled`, `read-only`, `workspace-write`, `danger-full-access` | `disabled`              | `disabled` removes built-in execution environments                                |
-| `web_search` | `disabled`, `cached`, `indexed`, `live`                          | `disabled`              | Applied per Codex thread                                                          |
+| `sandbox`    | `disabled`, `read-only`, `workspace-write`, `danger-full-access` | `danger-full-access`    | `disabled` removes built-in execution environments                                |
+| `web_search` | `disabled`, `cached`, `indexed`, `live`                          | `live`                  | Applied per Codex thread                                                          |
+
+Requests that omit `x_codex.sandbox` now default to `danger-full-access`, enabling built-in filesystem access beyond the workspace and command network access with the app-server process's OS permissions. Omitted `x_codex.web_search` defaults to `live`; search is available for the agent to choose, not forced on every request. The proxy prefers approval policy `never`, so unrestricted deployments need no interactive command approval. These defaults apply to the bare API, agent-service profile, and local profile, including requests with client tools. The legacy `--local-host-tools` flag remains accepted but no longer changes tool access.
+
+Compatibility: clients that relied on no execution environment must explicitly send `x_codex.sandbox: "disabled"`; use `read-only` or `workspace-write` for narrower filesystem access, and `x_codex.web_search: "disabled"` to disable hosted search. Explicit settings always take precedence. Managed requirements still apply; a disallowed default is rejected rather than bypassed or silently downgraded. Changing the effective policy starts a fresh Codex thread instead of reusing a continuation with the old policy. `x_codex.cwd` remains validated against `--root`; with full access this bounds the selected working directory, not filesystem access.
 
 The `disabled` sandbox provides no built-in shell or local filesystem reads or writes through an execution environment. The proxy realizes it as Codex's native `read-only` sandbox plus `environments: []`, so managed policy requirements must allow `read-only` for a request to use `disabled`. Hosted web search remains a separate capability selected by `x_codex.web_search`.
 
-On native Windows, the proxy defaults an unconfigured sandbox backend to `windows.sandbox = "unelevated"`, which does not require administrator setup. Explicit Windows sandbox settings and managed requirements take precedence. This backend selection is separate from `x_codex.sandbox`: requests must still opt into `read-only` or `workspace-write` for built-in filesystem access. The unelevated backend uses a restricted token and provides weaker isolation than the elevated backend; operators who have configured elevated sandboxing retain it. The isolated live-test Codex home uses the same default.
+On native Windows, the proxy defaults an unconfigured sandbox backend to `windows.sandbox = "unelevated"`, which does not require administrator setup. Explicit Windows sandbox settings and managed requirements take precedence. This backend selection is separate from `x_codex.sandbox`: requests default to `danger-full-access` and can explicitly select `workspace-write`, `read-only`, or `disabled` to restrict it. The unelevated backend uses a restricted token and provides weaker isolation than the elevated backend; operators who have configured elevated sandboxing retain it. The isolated live-test Codex home uses the same default.
 
-Multi-agent availability is app-server process configuration, not a Chat Completions request policy. The proxy starts app-server with subagents disabled unless the operator passes `--subagents true`; the startup log records the effective value as `subagents_enabled`. The proxy exposes no per-request `x_codex` multi-agent field, so enabling `read-only`, `workspace-write`, or web search does not itself enable child spawning.
+Multi-agent availability is app-server process configuration, not a Chat Completions request policy. App-server starts with subagents enabled by default; the agent decides whether to spawn them. Operators can pass `--subagents false` to disable both agent controls. The startup log records the effective value as `subagents_enabled`. There is no per-request `x_codex` multi-agent field. Child agents can increase model usage.
 
 The JSON Schema ships with the package at `protocol/schemas/x-codex.schema.json`.
 
 > **Project trust:** starting a new thread with `workspace-write` and a `cwd` can cause Codex to mark that project as trusted in your `config.toml`. Keep `--root` as narrow as possible.
+
+## Client interactions
+
+This is an opt-in, nonstandard `x_codex` extension; WorkBuddy and other clients must implement their own UI. The web console does not handle interactions. Generate a fresh random UUID v4 per completion, pass it as `x_codex.interaction_id`, and keep the original aggregate or SSE request open. No synthetic standard `tool_calls` or extra model turns are introduced. Clients that omit the field retain immediate-decline behavior for human callbacks. Never reuse a channel across concurrent requests.
+
+While the original completion is pending, poll `GET /v1/x_codex/interactions?interaction_id=<UUID>` using the **same API credential** as the completion (for example, once per second). This also works before SSE headers arrive. The response is `{ "x_codex": { "interactions": [...] } }`; each item contains an opaque `id`, diagnostic `requestId`, upstream `method`, and `params` describing the question, MCP form, or URL. Other credentials/channels see an empty list. No global listing is provided. If API authentication is disabled, the random channel acts as a secret capability; keep it private.
+
+Reply using `POST /v1/x_codex/interactions/respond`, the same credential, and `Content-Type: application/json`:
+
+```json
+{
+  "interaction_id": "66026ba8-d95c-4a91-8dbd-f418de86e518",
+  "id": "opaque-id-from-poll",
+  "response": { "answers": { "question-id": { "answers": ["selected label or free text"] } } }
+}
+```
+
+Question callbacks use method `item/tool/requestUserInput`: render `params.questions`, hide fields marked `isSecret`, and honor options and `isOther`. Empty `answers` cancels a question. MCP callbacks use `mcpServer/elicitation/request`: replies are `{ "action": "accept|decline|cancel", "content": ... }`, with object content for accepted forms and null for URLs, decline or cancel. The server owns `_meta`. Success returns `{ "x_codex": { "ok": true } }`; malformed answers return OpenAI-shaped 400 errors without consuming the callback, and unavailable/expired/consumed callbacks return 409. Reusing an active channel returns 409. Reply and polling routes remain available when completion concurrency is full; normal request size and deadline limits apply.
+
+Supported MCP forms cover strings, finite numbers, integers, booleans, string enums and titled single-choice options, including required fields, length and numeric bounds. Nested objects, arrays, formats/patterns, opaque `openai/form` schemas and verification challenges remain declined. This does not add MCP server configuration, initial OAuth login management, or command/file/permission approval UI. For URL elicitations, render an explicit HTTP(S) link with no referrer; open it only on user action and obtain explicit confirmation after external authorization. Opening a URL alone never proves authorization succeeded.
+
+Pending payloads and replies live only in memory, not the accounting database; diagnostic logs can still contain sensitive plaintext. Disconnects, deadlines, completion, process exit and transport replacement invalidate callbacks. Existing request deadlines include human waiting (native default: 30 seconds); configure a suitable deadline before starting. The client must stop polling when its original completion ends. These endpoints reject browser `Origin` headers like the model API; a browser UI needs its client's backend to relay authenticated requests.
+
 
 ## Usage metadata
 

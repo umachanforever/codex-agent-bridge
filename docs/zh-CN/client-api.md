@@ -181,16 +181,43 @@ assistant 消息还可携带 OpenAI 兼容客户端使用的 `reasoning_content`
 | 字段 | 值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `cwd` | 绝对路径 | 配置的 `--root` | 必须是 root 或其后代；拒绝相对路径与 symlink 逃逸 |
-| `sandbox` | `disabled`、`read-only`、`workspace-write`、`danger-full-access` | `disabled` | `disabled` 移除内置执行环境 |
-| `web_search` | `disabled`、`cached`、`indexed`、`live` | `disabled` | 按 Codex thread 应用 |
+| `sandbox` | `disabled`、`read-only`、`workspace-write`、`danger-full-access` | `danger-full-access` | `disabled` 移除内置执行环境 |
+| `web_search` | `disabled`、`cached`、`indexed`、`live` | `live` | 按 Codex thread 应用 |
+
+省略 `x_codex.sandbox` 现在默认使用 `danger-full-access`，内置工具可按 app-server 进程的操作系统权限访问工作区外文件和命令网络。省略 `x_codex.web_search` 默认使用 `live`，由 Agent 决定是否搜索，不强制每次搜索。代理优先选择 `never` 审批策略；无托管限制时不要求交互命令审批。裸 API、agent-service 和 local 模式均使用上述默认值，包括携带客户端工具的请求。旧 `--local-host-tools` 参数继续接受，但不再改变工具权限。
+
+兼容性：原先依赖无执行环境的客户端需显式传入 `x_codex.sandbox: "disabled"`；需要收紧文件权限时选择 `read-only` 或 `workspace-write`；禁用托管搜索需传入 `x_codex.web_search: "disabled"`。显式设置始终优先。托管策略仍然生效；默认权限不被允许时拒绝请求，不绕过或静默降级。有效策略变化时会新建 Codex thread，不复用旧权限的续写会话。`x_codex.cwd` 仍限制在 `--root` 内；完整访问模式下这仅限制所选工作目录，不是文件访问边界。
 
 `disabled` 不提供内置 shell 或执行环境中的本地文件读写。代理将其实现为 Codex 原生 `read-only` 加 `environments: []`，因此托管策略必须允许 `read-only`。托管 Web 搜索由 `x_codex.web_search` 单独选择。
 
-原生 Windows 在没有用户、项目或托管配置指定 backend 时默认提供 `windows.sandbox = "unelevated"`。这不会改变 `x_codex.sandbox` 的 opt-in 要求；unelevated backend 隔离弱于 elevated backend。
+原生 Windows 在没有用户、项目或托管配置指定 backend 时默认提供 `windows.sandbox = "unelevated"`。这不改变请求默认的 `danger-full-access` 权限；unelevated backend 隔离弱于 elevated backend。
 
-多 Agent 是 app-server 进程配置，不是每请求策略。默认关闭；操作方传入 `--subagents true` 后才开启。启用 sandbox 或 Web 搜索不会自动允许子 Agent。
+多 Agent 是 app-server 进程配置，不是每请求策略。子 Agent 默认开启，由 Agent 决定是否调用；操作方可传入 `--subagents false` 关闭两个 Agent 控制项。启动日志中的 `subagents_enabled` 记录有效值，不提供每请求 `x_codex` 多 Agent 字段。子 Agent 会增加模型用量。
 
 > **项目信任：** 使用 `workspace-write` 与 `cwd` 新建 thread 可能使 Codex 在 `config.toml` 中把项目标为可信。请尽量缩小 `--root`。
+
+## 客户端交互
+
+该能力属于非标准 `x_codex` 扩展，需由 WorkBuddy 等客户端实现界面；管理台不提供交互入口。每次请求生成新的随机 UUID v4，传入 `x_codex.interaction_id`，保持原聚合或 SSE 请求打开。不伪造标准 `tool_calls`，不额外启动模型轮次。不传该字段时保持原有立即拒绝人机回调的行为；并发请求禁止复用同一通道。
+
+原请求等待期间，用**同一 API 凭据**每秒轮询 `GET /v1/x_codex/interactions?interaction_id=<UUID>`，无需等待 SSE 响应头。返回 `{ "x_codex": { "interactions": [...] } }`，每项含一次性不透明 `id`、诊断用 `requestId`、上游 `method` 和描述问题／表单／URL 的 `params`。其他凭据或通道查询返回空列表，不提供全局列表。未启用 API 认证时，随机通道 ID 本身相当于秘密凭证，客户端应保密。
+
+回答使用相同凭据向 `POST /v1/x_codex/interactions/respond` 发送 JSON：
+
+```json
+{
+  "interaction_id": "66026ba8-d95c-4a91-8dbd-f418de86e518",
+  "id": "轮询返回的不透明-id",
+  "response": { "answers": { "问题-id": { "answers": ["选项标签或自由文本"] } } }
+}
+```
+
+`item/tool/requestUserInput` 渲染 `params.questions`，`isSecret` 使用隐藏输入，遵守选项及 `isOther`；空 `answers` 取消问题。`mcpServer/elicitation/request` 回答使用 `{ "action": "accept|decline|cancel", "content": ... }`；接受表单时 content 是对象，URL、拒绝或取消时为 null。代理负责 `_meta`。成功返回 `{ "x_codex": { "ok": true } }`；答案不合法返回 OpenAI 格式 400 且保留回调；不可用、过期或重复回答返回 409；复用活跃通道返回 409。完成请求占满并发名额时仍允许查询和回答，原有请求大小与超时限制继续生效。
+
+基础 MCP 表单支持字符串、有限数字、整数、布尔、字符串枚举、带标题的单选，以及必填、长度和数值范围。嵌套对象、数组、格式／正则约束、不透明 `openai/form` 及身份核验挑战仍拒绝；不新增 MCP 配置、首次 OAuth 登录管理或命令／文件／权限审批界面。URL 应显示为需用户点击的 HTTP(S) 链接，不发送 referrer；用户完成外部授权后显式确认，不能把打开页面当成授权成功。
+
+待处理内容与回答只保存在内存，不写入计费数据库；诊断日志仍可能含敏感明文。断开、超时、完成、进程退出或传输替换会使回调失效。人工等待计入原请求期限，原生默认仅 30 秒，请事先设置合适超时；原请求结束后客户端停止轮询。接口与模型 API 一样拒绝浏览器 Origin，需要由客户端后端转发浏览器交互请求。
+
 
 ## 用量元数据
 

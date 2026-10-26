@@ -35,14 +35,6 @@ test("service profile is explicit and cannot conflict with legacy defaults", () 
   const body = { messages: [{ role: "user", content: "synthetic" }] };
   assert.equal(
     (
-      adaptLocalBridgeRequest(body, "synthetic", true) as {
-        x_codex: { sandbox: string };
-      }
-    ).x_codex.sandbox,
-    "disabled",
-  );
-  assert.equal(
-    (
       adaptLocalBridgeRequest(body, "synthetic") as {
         x_codex: { sandbox: string };
       }
@@ -64,7 +56,7 @@ test("future metadata is ignored without mutation or permission escalation", () 
     stream_options: { include_usage: true, futureOption: true },
   };
   const before = JSON.stringify(body);
-  const adapted = adaptLocalBridgeRequest(body, "synthetic", true);
+  const adapted = adaptLocalBridgeRequest(body, "synthetic");
   assert.doesNotThrow(() =>
     validateRequest(adapted, silentLogger, "synthetic", true),
   );
@@ -78,7 +70,6 @@ test("future metadata is ignored without mutation or permission escalation", () 
         adaptLocalBridgeRequest(
           { ...body, stream_options: { include_usage: "yes" } },
           "synthetic",
-          true,
         ),
         silentLogger,
         "synthetic",

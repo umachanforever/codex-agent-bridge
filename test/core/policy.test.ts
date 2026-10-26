@@ -166,7 +166,7 @@ test("the complete 4 by 4 policy matrix is mapped without fallback", async () =>
   }, "proxy-policy-matrix-");
 });
 
-test("safe defaults are explicit and command network stays disabled", async () => {
+test("defaults allow full filesystem access, networking, and live web search", async () => {
   await withTempDir(async (directory) => {
     const root = await canonicalizeRoot(directory);
     const effective = await resolveEffectivePolicy(
@@ -176,12 +176,12 @@ test("safe defaults are explicit and command network stays disabled", async () =
     );
     assert.deepEqual(effective, {
       cwd: root,
-      sandbox: "disabled",
-      threadSandbox: "read-only",
-      webSearch: "disabled",
+      sandbox: "danger-full-access",
+      threadSandbox: "danger-full-access",
+      webSearch: "live",
       approvalPolicy: "never",
       approvalsReviewer: "auto_review",
-      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      sandboxPolicy: { type: "dangerFullAccess" },
     });
     assert.deepEqual(sandboxPolicy("workspace-write", root), {
       type: "workspaceWrite",
@@ -227,12 +227,29 @@ test("managed sandbox and web-search denials fail rather than approximate", asyn
       "sandbox_not_allowed",
     );
     await rejectsPolicy(
-      resolveEffectivePolicy({ webSearch: "live" }, root, managed),
+      resolveEffectivePolicy({}, root, managed),
+      "sandbox_not_allowed",
+    );
+    await rejectsPolicy(
+      resolveEffectivePolicy({ sandbox: "read-only" }, root, managed),
+      "web_search_not_allowed",
+    );
+    await rejectsPolicy(
+      resolveEffectivePolicy(
+        { sandbox: "read-only", webSearch: "live" },
+        root,
+        managed,
+      ),
       "web_search_not_allowed",
     );
     assert.equal(
-      (await resolveEffectivePolicy({ webSearch: "indexed" }, root, managed))
-        .webSearch,
+      (
+        await resolveEffectivePolicy(
+          { sandbox: "read-only", webSearch: "indexed" },
+          root,
+          managed,
+        )
+      ).webSearch,
       "indexed",
     );
   }, "proxy-policy-managed-");
@@ -503,8 +520,8 @@ test("binding material is stable and includes every effective policy choice", as
     const baseline = await resolveEffectivePolicy({}, root, requirements());
     assert.deepEqual(policyBindingInput(baseline), {
       cwd: root,
-      sandbox: "disabled",
-      webSearch: "disabled",
+      sandbox: "danger-full-access",
+      webSearch: "live",
       approvalPolicy: "never",
       approvalsReviewer: "auto_review",
     });
@@ -525,4 +542,20 @@ test("binding material is stable and includes every effective policy choice", as
     for (const variant of variants)
       assert.notEqual(policyBindingHash(variant), policyBindingHash(baseline));
   }, "proxy-policy-binding-");
+});
+
+test("interaction channels accept only explicit random UUID v4 values", () => {
+  const interactionId = "66026ba8-d95c-4a91-8dbd-f418de86e518";
+  assert.equal(
+    validateRequestPolicy({ interaction_id: interactionId }).interactionId,
+    interactionId,
+  );
+  for (const interaction_id of [
+    null,
+    false,
+    42,
+    "guessable",
+    "66026ba8-d95c-1a91-8dbd-f418de86e518",
+  ])
+    assert.throws(() => validateRequestPolicy({ interaction_id }), /UUID v4/);
 });

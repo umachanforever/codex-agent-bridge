@@ -2816,8 +2816,7 @@ test("strips replayed assistant reasoning before injecting visible history", asy
       cwd: await realpath("."),
       approvalPolicy: "never",
       approvalsReviewer: "auto_review",
-      sandboxPolicy: { type: "readOnly", networkAccess: false },
-      environments: [],
+      sandboxPolicy: { type: "dangerFullAccess" },
     });
   });
 });
@@ -4486,7 +4485,7 @@ test("request policies map exactly, bind continuations, and honor managed denial
           sandbox: "read-only",
           approvalPolicy: "never",
           approvalsReviewer: "auto_review",
-          config: { web_search: "disabled" },
+          config: { web_search: "live" },
           environments: [],
         },
       );
@@ -4506,24 +4505,35 @@ test("request policies map exactly, bind continuations, and honor managed denial
         },
       );
 
-      // Omitting x_codex must behave exactly like explicit sandbox "disabled":
-      // identical thread settings and turn overrides, differing only in input.
+      // Omitting x_codex enables full access and live search without removing environments.
       assert.deepEqual(
         defaultFake.messages.find(
           (message) => message.method === "thread/start",
         )?.params,
-        disabledFake.messages.find(
-          (message) => message.method === "thread/start",
-        )?.params,
+        {
+          model: "m",
+          ephemeral: false,
+          experimentalRawEvents: true,
+          baseInstructions: "",
+          cwd: root,
+          sandbox: "danger-full-access",
+          approvalPolicy: "never",
+          approvalsReviewer: "auto_review",
+          config: { web_search: "live" },
+        },
       );
       assert.deepEqual(
         defaultFake.messages.find((message) => message.method === "turn/start")
           ?.params,
         {
-          ...(disabledFake.messages.find(
-            (message) => message.method === "turn/start",
-          )?.params as Record<string, unknown>),
+          threadId: "thr_policy",
+          model: "m",
+          summary: "detailed",
           input: [{ type: "text", text: "offline", text_elements: [] }],
+          cwd: root,
+          approvalPolicy: "never",
+          approvalsReviewer: "auto_review",
+          sandboxPolicy: { type: "dangerFullAccess" },
         },
       );
 
@@ -4551,7 +4561,7 @@ test("request policies map exactly, bind continuations, and honor managed denial
           sandbox: "read-only",
           approvalPolicy: "never",
           approvalsReviewer: "auto_review",
-          config: { web_search: "disabled" },
+          config: { web_search: "live" },
         },
       );
       assert.deepEqual(
@@ -4611,7 +4621,7 @@ test("request policies map exactly, bind continuations, and honor managed denial
         sandbox: "read-only",
         approvalPolicy: "never",
         approvalsReviewer: "auto_review",
-        config: { web_search: "disabled" },
+        config: { web_search: "live" },
       });
       assert.deepEqual(changedDisabledMessages[1]?.params, {
         threadId: "thr_policy_2",
@@ -4642,7 +4652,7 @@ test("request policies map exactly, bind continuations, and honor managed denial
       const defaultDeniedFake = policyCapturingAppServer();
       proxy.setTransport(defaultDeniedFake.rpc, {
         ...UNRESTRICTED_POLICY_REQUIREMENTS,
-        allowedSandboxModes: ["workspace-write"],
+        allowedSandboxModes: ["read-only"],
       });
       const defaultDenied = await fetch(`${origin}/v1/chat/completions`, {
         method: "POST",

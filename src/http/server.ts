@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { InteractionBroker } from "../app-server/interactions.js";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
@@ -38,6 +39,7 @@ import {
 
 /** Controls the proxy HTTP listener and readiness state. */
 export interface ProxyServer {
+  interactions: InteractionBroker | undefined;
   models(): Promise<string[]>;
   completeText(body: unknown, signal: AbortSignal): Promise<string>;
   status(): { ready: boolean; active: number };
@@ -66,6 +68,7 @@ export function createProxyServer(
   const authorize = localBridgeAuthorizer(
     options.localBridgeModel !== undefined,
   );
+  const interactions = new InteractionBroker();
   let ready = false;
   let transport: JsonRpcTransport | undefined;
   let requirements = UNRESTRICTED_POLICY_REQUIREMENTS;
@@ -145,6 +148,12 @@ export function createProxyServer(
       logRequest(error.status);
       return;
     }
+    const interactionOwner = createHash("sha256")
+      .update(bearer ?? "")
+      .digest("hex");
+    const isInteraction =
+      url?.pathname === "/v1/x_codex/interactions" ||
+      url?.pathname === "/v1/x_codex/interactions/respond";
     const maxRequests = settings?.maxRequests ?? options.maxRequests;
     const timeoutMs = settings?.timeoutMs ?? options.requestTimeoutMs;
     const metadata: RequestRecord = {
@@ -182,8 +191,8 @@ export function createProxyServer(
         log("error", "usage_persistence_failed", { request_id: requestId });
       }
     };
-    // Reject before allocating per-request resources when capacity is full.
-    if (maxRequests > 0 && active >= maxRequests) {
+    // Interaction replies must bypass capacity so a waiting completion cannot deadlock itself.
+    if (!isInteraction && maxRequests > 0 && active >= maxRequests) {
       const overloaded = new HttpError(
         429,
         "The proxy is handling too many requests.",
@@ -242,14 +251,14 @@ export function createProxyServer(
       log,
       requestId,
       url,
+      interactions,
+      interactionOwner,
       localBridgeModel: settings?.model ?? options.localBridgeModel,
       observe: (value) => {
         if (value.model) metadata.model = value.model;
         if (value.usage) metadata.usage = value.usage;
         if (value.error) metadata.error = value.error;
       },
-      agentService: options.agentService ?? false,
-      localHostTools: options.localHostTools ?? false,
       localHealth:
         options.localBridgeModel === undefined
           ? undefined
@@ -306,6 +315,7 @@ export function createProxyServer(
   });
 
   return {
+    interactions,
     async models() {
       const catalog = await readModelCatalog(readyTransport(ready, transport), {
         signal: AbortSignal.timeout(15000),
@@ -489,8 +499,8 @@ interface RouteContext {
   requestId: string;
   url: URL | undefined;
   localBridgeModel: string | undefined;
-  agentService: boolean;
-  localHostTools: boolean;
+  interactions: InteractionBroker | undefined;
+  interactionOwner: string;
   localHealth: Record<string, unknown> | undefined;
 }
 
@@ -511,11 +521,87 @@ async function route({
   requestId,
   url,
   localBridgeModel,
-  agentService,
-  localHostTools,
+  interactions,
+  interactionOwner,
   localHealth,
   observe,
 }: RouteContext): Promise<void> {
+  if (
+    url?.pathname === "/v1/x_codex/interactions" &&
+    request.method === "GET"
+  ) {
+    const channel = url.searchParams.get("interaction_id");
+    if (!channel)
+      throw new HttpError(
+        400,
+        "interaction_id is required.",
+        "invalid_request_error",
+        "invalid_interaction_id",
+      );
+    writeJson(response, 200, {
+      x_codex: {
+        interactions:
+          interactions?.list({ channel, owner: interactionOwner }) ?? [],
+      },
+    });
+    return;
+  }
+  if (
+    url?.pathname === "/v1/x_codex/interactions/respond" &&
+    request.method === "POST"
+  ) {
+    if (
+      request.headers["content-type"]
+        ?.split(";", 1)[0]
+        ?.trim()
+        .toLowerCase() !== "application/json"
+    )
+      throw new HttpError(
+        415,
+        "Content-Type must be application/json.",
+        "invalid_request_error",
+        "unsupported_media_type",
+      );
+    const input = (await readJsonBody(
+      request,
+      Math.min(bodyLimit, 65536),
+      signal,
+    )) as Record<string, unknown> | null;
+    if (
+      !input ||
+      typeof input.interaction_id !== "string" ||
+      typeof input.id !== "string"
+    )
+      throw new HttpError(
+        400,
+        "interaction_id and id are required.",
+        "invalid_request_error",
+        "invalid_interaction_response",
+      );
+    let resolved: boolean | undefined;
+    try {
+      resolved = interactions?.resolve(input.id, input.response, {
+        channel: input.interaction_id,
+        owner: interactionOwner,
+      });
+    } catch {
+      throw new HttpError(
+        400,
+        "Answer does not match the question or form.",
+        "invalid_request_error",
+        "invalid_interaction_response",
+      );
+    }
+    if (!resolved)
+      throw new HttpError(
+        409,
+        "Interaction is unavailable or already resolved.",
+        "invalid_request_error",
+        "interaction_unavailable",
+      );
+    writeJson(response, 200, { x_codex: { ok: true } });
+    return;
+  }
   if (request.method === "GET" && url?.pathname === "/health") {
     writeJson(response, 200, { status: "ok", ...localHealth });
     return;
@@ -582,15 +668,12 @@ async function route({
         "app_server_not_ready",
       );
     await handleChatCompletion(
-      adaptLocalBridgeRequest(
-        body,
-        localBridgeModel,
-        agentService,
-        localHostTools,
-      ),
+      adaptLocalBridgeRequest(body, localBridgeModel),
       response,
       {
         rpc,
+        interactions,
+        interactionOwner,
         observe,
         log,
         requestId,

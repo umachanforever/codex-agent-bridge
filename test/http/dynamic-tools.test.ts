@@ -2961,7 +2961,7 @@ test("implicit binding mismatches fall back and leave the pending source consuma
           model: "m",
           reasoning_effort: "high",
           tools,
-          x_codex: { sandbox: "workspace-write" },
+          x_codex: { sandbox: "read-only" },
           messages: [{ role: "user", content: "use tools" }],
         })
       ).json()) as CompletionBody;
@@ -2989,7 +2989,7 @@ test("implicit binding mismatches fall back and leave the pending source consuma
         model: "m",
         reasoning_effort: "low",
         tools,
-        x_codex: { sandbox: "workspace-write" },
+        x_codex: { sandbox: "read-only" },
         messages: toolTranscript(calls),
       });
       assert.equal(changedEffort.status, 200);
@@ -3018,7 +3018,7 @@ test("implicit binding mismatches fall back and leave the pending source consuma
         model: "m",
         reasoning_effort: "high",
         tools,
-        x_codex: { sandbox: "workspace-write" },
+        x_codex: { sandbox: "read-only" },
         messages: toolTranscript(calls),
       });
       assert.equal(repeated.status, 200);

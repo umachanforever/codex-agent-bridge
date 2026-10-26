@@ -27,9 +27,9 @@ export const DEFAULT_CODEX_HOME_DESCRIPTION =
 export interface ServeOptions {
   /** Opt-in authenticated compatibility profile; value is the codex-cli target. */
   localBridgeModel?: string;
-  /** Explicitly retain built-in host tools when local-profile clients declare tools. */
+  /** Legacy compatibility flag; built-in host tools are now enabled by default. */
   localHostTools?: boolean;
-  /** Service profile disables implicit host tools, retaining managed policies. */
+  /** Service profile accepts client agents with full-access defaults and managed policies. */
   agentService?: boolean;
   /** Explicit authentication ownership; defaults to reusing local credentials. */
   authMode?: "reuse" | "independent";
@@ -326,7 +326,7 @@ export function parseServeOptions(
     codexPath: values.get("--codex-path") ?? "codex",
     subagentsEnabled: boolean(
       "--subagents",
-      values.get("--subagents") ?? "false",
+      values.get("--subagents") ?? "true",
     ),
     implicitToolContinuation: boolean(
       "--implicit-tool-continuation",

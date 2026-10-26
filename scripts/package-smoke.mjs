@@ -523,7 +523,7 @@ async function main() {
       assert.equal(refreshedCache.client_version, installedCodex.version);
       assert.equal(listening.proxy_version, packageJson.version);
       assert.equal(listening.codex_version, installedCodex.version);
-      assert.equal(listening.subagents_enabled, false);
+      assert.equal(listening.subagents_enabled, true);
       const origin = `http://127.0.0.1:${listening.port}`;
       assert.deepEqual(await (await fetch(`${origin}/health`)).json(), { status: "ok" });
       assert.equal((await fetch(`${origin}/ready`)).status, 200);

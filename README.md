@@ -19,12 +19,14 @@ Install from this repository with Node.js or Docker Compose. The deployment comm
 
 ## Features and limits
 
+- Personal-use defaults enable full filesystem and command network access, live Web search, and child agents without interactive approval when managed policy allows. Clients can restrict access through the nonstandard `x_codex` extension; use `--subagents false` to disable child agents.
 - Text conversations, SSE streaming, client function tools, and continuation with tool results.
 - Upstream reconnection notifications keep the request open within its configured timeout; only terminal failures become client errors.
 - Standard `tool_calls` contain only functions the client must execute; Codex-owned tool and agent activity is isolated under `x_codex.activity`.
 - Text-part arrays, interrupted assistant turns, and harmless history metadata; tool pairing and execution policies remain validated.
 - Client parameters are accepted by default: native settings are forwarded, and unmapped controls are ignored with a warning. Token caps do not limit output or model cost.
 - Reuse of local Codex authentication by default, with a separate writable Codex home for the proxy. Independent login is optional.
+- Opt-in client `x_codex` extensions support human questions, basic MCP forms, and authorization links while the original completion waits; clients implement the interaction UI. See [client interactions](docs/en/client-api.md#client-interactions).
 - Web management for status, usage, API keys, runtime settings, and theme selection.
 - A manual price table and an optional model-assisted lookup of current official prices. Suggested changes require review and confirmation before saving.
 - Measured token usage and an estimated standard short-context cost based on public API prices. This is neither a bill nor an account balance.

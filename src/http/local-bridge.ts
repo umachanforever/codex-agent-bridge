@@ -158,8 +158,6 @@ export function localBridgeAuthorizer(
 export function adaptLocalBridgeRequest(
   value: unknown,
   model: string | undefined,
-  agentService = false,
-  localHostTools = false,
 ): unknown {
   if (model === undefined) return value;
   const body = record(value);
@@ -167,9 +165,6 @@ export function adaptLocalBridgeRequest(
   const extension = record(body.x_codex);
   // Leave malformed extensions intact for the normal validator to reject.
   if (body.x_codex !== undefined && !extension) return value;
-  const clientTools =
-    (Array.isArray(body.tools) && body.tools.length > 0) ||
-    (Array.isArray(body.functions) && body.functions.length > 0);
   return {
     ...body,
     ...(Array.isArray(body.messages)
@@ -183,12 +178,8 @@ export function adaptLocalBridgeRequest(
         ? model
         : body.model,
     x_codex: {
-      // Client agents own their tools. A second host-side shell requires the
-      // explicit local-profile opt-in when the client declares tools.
-      sandbox:
-        agentService || (clientTools && !localHostTools)
-          ? "disabled"
-          : "danger-full-access",
+      // Explicit client restrictions override the personal-use full-access default.
+      sandbox: "danger-full-access",
       ...extension,
     },
   };

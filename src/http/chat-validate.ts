@@ -85,6 +85,7 @@ function selectToolBatch(messages: readonly ChatMessage[]): ToolBatchSelection {
 
 /** The Stage 04 request subset after validation. */
 export interface ChatRequest {
+  interactionId?: string | undefined;
   generation?: GenerationOptions;
   model: string;
   reasoningEffort?: ChatReasoningEffort;
@@ -282,6 +283,9 @@ export function validateRequest(
     includeUsage,
     dynamicTools,
     requestPolicy,
+    ...(requestPolicy.interactionId
+      ? { interactionId: requestPolicy.interactionId }
+      : {}),
     ...(typeof body.previous_response_id === "string"
       ? { previousResponseId: body.previous_response_id }
       : {}),

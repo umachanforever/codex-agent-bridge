@@ -1,3 +1,4 @@
+import type { InteractionBroker } from "./interactions.js";
 import {
   spawn,
   type ChildProcess,
@@ -122,6 +123,7 @@ export interface AppServer {
 
 /** Configures app-server process startup and shutdown. */
 export interface StartAppServerOptions {
+  interactions?: InteractionBroker | undefined;
   codexPath: string;
   /** Whether the child process may expose tools that spawn subagents. */
   subagentsEnabled?: boolean | undefined;
@@ -140,8 +142,8 @@ export interface StartAppServerOptions {
   signal?: AbortSignal;
 }
 
-/** Builds app-server arguments with an explicit fail-closed subagent policy. */
-export function appServerArguments(subagentsEnabled = false): string[] {
+/** Builds app-server arguments with an explicit operator-selected subagent policy. */
+export function appServerArguments(subagentsEnabled = true): string[] {
   const enabled = String(subagentsEnabled);
   // Both the stable agent setting and its feature gate are explicit so a
   // custom config.toml cannot silently broaden or narrow the selected policy.
@@ -217,9 +219,10 @@ export async function startAppServer(
   rpc.on("malformed", () =>
     options.log("error", "app_server_malformed_output"),
   );
-  rpc.on("request", (request: ServerRequest) =>
-    failClosed(rpc, request, options.log),
-  );
+  rpc.on("request", (request: ServerRequest) => {
+    if (!options.interactions?.handle(rpc, request))
+      failClosed(rpc, request, options.log);
+  });
   child.once("exit", (code, signal) => {
     rpc.close(new Error(`app-server exited (${code ?? signal ?? "unknown"})`));
     options.log("error", "app_server_exited", { code, signal });

@@ -28,16 +28,16 @@ import {
 } from "../support/http.js";
 import { withTempDir } from "../support/temp.js";
 
-/** Returns the Stage 06 safe-default continuation policy binding. */
+/** Returns the default full-access continuation policy binding. */
 function defaultPolicyHash(cwd: string): string {
   return policyBindingHash({
     cwd,
-    sandbox: "disabled",
-    threadSandbox: "read-only",
-    webSearch: "disabled",
+    sandbox: "danger-full-access",
+    threadSandbox: "danger-full-access",
+    webSearch: "live",
     approvalPolicy: "never",
     approvalsReviewer: "auto_review",
-    sandboxPolicy: { type: "readOnly", networkAccess: false },
+    sandboxPolicy: { type: "dangerFullAccess" },
   });
 }
 
