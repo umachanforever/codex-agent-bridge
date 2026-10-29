@@ -124,7 +124,7 @@ repeat text that is also visible in the page image. Model support for audio and
 image processing is still determined by the selected app-server model. Remote URLs,
 local file paths, uploaded `file_id` values, and media in other message roles
 are rejected before starting a turn. Audio generation, transcription endpoints,
-image generation, and the Images API are not supported. The [official OpenAI
+and the Images API are not supported. Native app-server image generation is available when the active provider and effective Codex configuration allow it. Completed inline PNG, JPEG, WebP, and GIF results (up to 20 MiB decoded) are returned as Markdown data-URL images in standard assistant content, in both aggregate and SSE responses. No extra model ID or client tool execution is required. Image-generation activity stays under `x_codex.activity`, with only MIME type and byte count; local paths and opaque file IDs are never read or published. Failures, unsupported file-ID-only results, and generation during structured JSON output fail explicitly. Display depends on client support for Markdown data-URL images; for edits, attach the generated image as a user image part. The [official OpenAI
 file guide](https://developers.openai.com/api/docs/guides/file-inputs) limits
 standard Chat Completions file parts to PDF.
 

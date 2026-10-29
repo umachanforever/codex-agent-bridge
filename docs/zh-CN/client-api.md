@@ -89,6 +89,8 @@ curl http://127.0.0.1:8787/v1/models
 
 PDF 会在创建 thread 前提取每页文本并渲染完整页面 PNG；CSV 和 XLSX 转换为带文件名、sheet 名的行数组。CSV/XLSX 每文件最多 10,000 行、256 列，XLSX 最多 16 个 sheet、ZIP 展开数据最多 32 MiB。请求提取文本最多 2 MiB。PDF 每请求最多 16 页、提取文本最多 2 MiB、单页图片最多 8 MiB、渲染 PNG 总计最多 40 MiB；超限时不会静默丢页。模型是否支持图片或音频仍由所选 app-server 模型决定。远程 URL、本地路径、`file_id` 和非 user 角色中的媒体会在 turn 开始前被拒绝。
 
+原生生图在 app-server 当前提供方和有效 Codex 配置允许时可用，无需新增模型或客户端执行工具。成功返回的内联 PNG、JPEG、WebP、GIF（解码后最多 20 MiB）会作为 Markdown data URL 图片写入普通和流式 assistant content。客户端需支持这类图片显示；后续改图请将生成图片作为 user 图片附件上传。`x_codex.activity` 仅包含图片 MIME 类型和字节数，不暴露或读取本地路径及不透明 file ID。失败、仅返回 file ID、与结构化 JSON 输出混用均明确报错，不伪装成成功生成。
+
 `GET /v1/models` 分页读取已鉴权 app-server 的 `model/list`，只返回可见模型。它不启动 Codex thread 或 turn。`created: 0` 与 `owned_by: "openai"` 是兼容占位值。
 
 `GET /v1/models/{id}` 为可见模型返回同样的标准模型对象，供发送聊天请求前会先验证模型的 OpenAI 兼容客户端使用。

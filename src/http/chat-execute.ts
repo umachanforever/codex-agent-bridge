@@ -179,7 +179,10 @@ export async function execute(
         historicalToolCallIds,
       );
       if (call) queue.enqueue({ type: "raw_dynamic_tool", call, params });
-      else
+      else if (record(record(params)?.item)?.type === "image_generation_call") {
+        // Retain only this explicitly supported provider-native image payload.
+        queue.enqueue({ type: "notification", method, params });
+      } else
         // Keep only correlation, not provider payloads, to invalidate an older
         // boundary even when the next raw item is private/internal activity.
         queue.enqueue({
@@ -480,7 +483,13 @@ export async function execute(
             continue;
           if (next.method === "rawResponseItem/completed") {
             precedingRawBoundary = false;
-            continue;
+            // Native image bytes are the one explicitly exposed raw output.
+            // Other raw items remain private and client-tool routing is unchanged.
+            if (
+              record(record(next.params)?.item)?.type !==
+              "image_generation_call"
+            )
+              continue;
           }
           if (next.method === "rawResponse/completed")
             precedingRawBoundary = true;

@@ -118,6 +118,7 @@ interface FakeAppServerOptions {
   extraModelRequest?: boolean;
   lateUsageCorrections?: boolean;
   instructionSources?: string[];
+  imageGeneration?: boolean;
 }
 
 /** Creates an offline fake app-server transport with deliberately split frames. */
@@ -134,6 +135,7 @@ function fakeAppServer({
   extraModelRequest = false,
   lateUsageCorrections = false,
   instructionSources = [],
+  imageGeneration = false,
 }: FakeAppServerOptions = {}): FakeTransport {
   let thread = "";
   return createFakeTransport({
@@ -188,6 +190,44 @@ function fakeAppServer({
             },
           ]);
           return;
+        }
+        if (imageGeneration) {
+          const result = Buffer.from([
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0,
+          ]).toString("base64");
+          send(
+            protocolNotification({
+              method: "rawResponseItem/completed",
+              params: {
+                threadId: thread,
+                turnId: "turn_test",
+                item: {
+                  type: "image_generation_call",
+                  id: "img_fixture",
+                  status: "completed",
+                  result,
+                },
+              },
+            }),
+          );
+          send(
+            protocolNotification({
+              method: "item/completed",
+              params: {
+                threadId: thread,
+                turnId: "turn_test",
+                completedAtMs: 1,
+                item: {
+                  type: "imageGeneration",
+                  id: "img_fixture",
+                  status: "completed",
+                  revisedPrompt: null,
+                  failure: null,
+                  fileId: "opaque-image",
+                },
+              },
+            }),
+          );
         }
         // A turn that runs internal activity spans several model requests, each
         // reporting its own usage against grown cumulative counters.
@@ -2225,6 +2265,7 @@ test("returns loaded instruction sources in aggregate and streaming metadata", a
         (await aggregate.json()) as {
           x_codex?: {
             instructionSources?: string[];
+            imageGeneration?: boolean;
             threadReused?: boolean;
           };
         }
@@ -4937,4 +4978,26 @@ test("unexpected upstream interruptions expose an error and never save a success
       }
     });
   }
+});
+
+test("returns native generated images once through aggregate and SSE HTTP responses", async () => {
+  await withChatServer(async (origin, _proxy, useTransport) => {
+    for (const stream of [false, true]) {
+      useTransport(fakeAppServer({ imageGeneration: true }));
+      const response = await fetch(`${origin}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "m",
+          messages: [{ role: "user", content: "Draw a circle" }],
+          stream,
+        }),
+      });
+      const body = await response.text();
+      assert.equal(response.status, 200, body);
+      assert.equal(body.split("data:image/png;base64,").length - 1, 1);
+      assert.equal(body.includes("opaque-image"), false);
+      if (stream) assert.ok(body.includes("[DONE]"));
+    }
+  });
 });

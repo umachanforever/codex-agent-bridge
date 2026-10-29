@@ -6,6 +6,8 @@ Codex Agent Bridge exposes a local `codex app-server` through an OpenAI Chat Com
 
 Install from this repository with Node.js or Docker Compose. The deployment commands below build the service from the checked-out source.
 
+Native web search defaults to `live`. Native image generation is available when the active app-server provider and effective configuration allow it; completed inline images are returned in assistant content as Markdown data URLs for compatible clients. Explicit search settings and managed Codex policy remain authoritative. See [client capabilities](docs/en/client-api.md).
+
 ## Table of contents
 
 - [Features and limits](#features-and-limits)
