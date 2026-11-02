@@ -89,7 +89,7 @@ curl http://127.0.0.1:8787/v1/models
 
 PDF 会在创建 thread 前提取每页文本并渲染完整页面 PNG；CSV 和 XLSX 转换为带文件名、sheet 名的行数组。CSV/XLSX 每文件最多 10,000 行、256 列，XLSX 最多 16 个 sheet、ZIP 展开数据最多 32 MiB。请求提取文本最多 2 MiB。PDF 每请求最多 16 页、提取文本最多 2 MiB、单页图片最多 8 MiB、渲染 PNG 总计最多 40 MiB；超限时不会静默丢页。模型是否支持图片或音频仍由所选 app-server 模型决定。远程 URL、本地路径、`file_id` 和非 user 角色中的媒体会在 turn 开始前被拒绝。
 
-原生生图在 app-server 当前提供方和有效 Codex 配置允许时可用，无需新增模型或客户端执行工具。成功返回的内联 PNG、JPEG、WebP、GIF（解码后最多 20 MiB）会作为 Markdown data URL 图片写入普通和流式 assistant content。客户端需支持这类图片显示；后续改图请将生成图片作为 user 图片附件上传。`x_codex.activity` 仅包含图片 MIME 类型和字节数，不暴露或读取本地路径及不透明 file ID。失败、仅返回 file ID、与结构化 JSON 输出混用均明确报错，不伪装成成功生成。
+原生生图在 app-server 当前提供方和有效 Codex 配置允许时可用，无需新增模型或客户端执行工具。成功返回的内联 PNG、JPEG、WebP、GIF（解码后最多 20 MiB）会作为 Markdown data URL 图片写入普通和流式 assistant content。声明 `show_widget` 或 `present_files` 的客户端改用短的本机原图地址，默认只在聊天内显示，点击图片可打开同一原图，不自动调用预览工具或打开右侧面板，也不改用 SVG/HTML 绘图。图片大小仍由客户端控制。同时声明兼容 `Bash` 工具并允许自动工具选择时，WorkBuddy 会在聊天内显示原图卡片，点击可预览、保存或复制，默认不打开侧栏；需要客户端提供 Python 3、文件工具及权限。客户端通过正常工具结果流程续接；关闭隐式续接时需携带 `previous_response_id`。强制工具选择、结构化输出或不兼容的 Bash schema 不启用自动下载。`GET`/`HEAD /v1/x_codex/images/<random>.<extension>` 是只读 `x_codex` 扩展，依靠独立的 256 位随机地址授权图片读取，不包含客户端密钥。原图仅缓存在当前监听进程内，最长七天；达到 128 MiB 或 128 张时按先进先出淘汰，重启也会清空，请及时保存重要图片。仅此图片读取路由允许浏览器 Origin，普通接口的认证及跨域限制保持不变，HTTP 日志会隐藏图片随机文件名。历史 assistant Markdown 引用本监听器内仍有效的图片时，会从缓存恢复视觉输入，不访问网络，每次最多恢复 40 MiB 图片字节。图片地址保留客户端使用的有效回环 Host 及端口，支持 Docker 自定义宿主端口映射。其他客户端保持 data URL；显式提交的远程 user 图片 URL 仍不支持。`x_codex.activity` 仅包含图片 MIME 类型和字节数，不暴露或读取本地路径及不透明 file ID。失败、仅返回 file ID、与结构化 JSON 输出混用均明确报错，不伪装成成功生成。
 
 `GET /v1/models` 分页读取已鉴权 app-server 的 `model/list`，只返回可见模型。它不启动 Codex thread 或 turn。`created: 0` 与 `owned_by: "openai"` 是兼容占位值。
 

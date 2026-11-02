@@ -3,9 +3,10 @@ import { HttpError } from "./errors.js";
 /** Largest generated image accepted by the existing image-input contract. */
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
-/** Public, path-free representation of one completed native image result. */
+/** Validated path-free image bytes and the default inline rendering. */
 export interface GeneratedImage {
   markdown: string;
+  data: Buffer;
   mime: string;
   bytes: number;
 }
@@ -66,6 +67,7 @@ export function generatedImage(item: Record<string, unknown>): GeneratedImage {
   return {
     markdown: `\n\n![Generated image](data:${mime};base64,${result})\n\n`,
     mime,
+    data: bytes,
     bytes: bytes.length,
   };
 }

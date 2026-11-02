@@ -1,3 +1,4 @@
+import { ImageFiles, IMAGE_FILE_PREFIX } from "./image-files.js";
 import { InteractionBroker } from "../app-server/interactions.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -69,6 +70,7 @@ export function createProxyServer(
     options.localBridgeModel !== undefined,
   );
   const interactions = new InteractionBroker();
+  const imageFiles = new ImageFiles();
   let ready = false;
   let transport: JsonRpcTransport | undefined;
   let requirements = UNRESTRICTED_POLICY_REQUIREMENTS;
@@ -104,15 +106,27 @@ export function createProxyServer(
       log(routineProbe ? "debug" : "info", "http_request", {
         request_id: requestId,
         method: request.method,
-        path: url?.pathname ?? "[invalid-path]",
+        path: url?.pathname.startsWith(IMAGE_FILE_PREFIX)
+          ? `${IMAGE_FILE_PREFIX}[redacted]`
+          : (url?.pathname ?? "[invalid-path]"),
         status,
         duration_ms: Date.now() - started,
       });
     };
-    const authorityError = validateRequestAuthority(request);
+    const imageRead =
+      url?.pathname.startsWith(IMAGE_FILE_PREFIX) &&
+      (request.method === "GET" || request.method === "HEAD");
+    const authorityError = validateRequestAuthority(request, imageRead);
     if (authorityError) {
       writeError(response, authorityError);
       logRequest(authorityError.status);
+      return;
+    }
+    // Browser image loads cannot attach a bearer header. Only this read-only,
+    // unguessable capability route bypasses client authentication and Origin rejection.
+    if (imageRead) {
+      response.once("finish", () => logRequest(response.statusCode));
+      imageFiles.serve(request, response, url!.pathname);
       return;
     }
     const bearer = /^Bearer ([^\s]+)$/i.exec(
@@ -237,6 +251,11 @@ export function createProxyServer(
       finish();
     });
     void route({
+      imageFiles: {
+        store: imageFiles,
+        // Preserve the validated client authority across Docker port mapping.
+        origin: `http://${request.headers.host}`,
+      },
       request,
       response,
       ready,
@@ -463,6 +482,7 @@ export function createProxyServer(
       }),
     close: () =>
       new Promise((resolve, reject) => {
+        imageFiles.clear();
         continuations?.dispose();
         transport?.close(new Error("proxy shutting down"));
         continuations = undefined;
@@ -483,6 +503,7 @@ export function createProxyServer(
 
 /** Everything one routed request needs from the server's current state. */
 interface RouteContext {
+  imageFiles: NonNullable<ChatHandlerOptions["imageFiles"]>;
   observe?: ChatHandlerOptions["observe"];
   request: IncomingMessage;
   response: ServerResponse;
@@ -506,6 +527,7 @@ interface RouteContext {
 
 /** Routes the intentionally small public HTTP surface. */
 async function route({
+  imageFiles,
   request,
   response,
   ready,
@@ -671,6 +693,7 @@ async function route({
       adaptLocalBridgeRequest(body, localBridgeModel),
       response,
       {
+        imageFiles,
         rpc,
         interactions,
         interactionOwner,
@@ -717,9 +740,10 @@ function readyTransport(
   return transport;
 }
 
-/** Rejects hostile authorities and every browser-originated request. */
+/** Rejects hostile authorities and browser API access; image capabilities are read-only. */
 function validateRequestAuthority(
   request: IncomingMessage,
+  imageRead = false,
 ): HttpError | undefined {
   if (!isAllowedHost(request.headers.host))
     return new HttpError(
@@ -732,7 +756,7 @@ function validateRequestAuthority(
   // The proxy has no browser authentication surface. Rejecting Origin entirely
   // keeps cross-origin and browser form traffic fail-closed, while ordinary CLI
   // and server-side HTTP clients (which omit Origin) remain compatible.
-  if (request.headers.origin !== undefined)
+  if (!imageRead && request.headers.origin !== undefined)
     return new HttpError(
       403,
       "Browser-originated requests are not accepted.",

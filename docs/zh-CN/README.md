@@ -4,6 +4,8 @@
 
 Codex Agent Bridge 通过兼容 OpenAI Chat Completions 的接口，将本地的 `codex app-server` 暴露给 AstrBot、WorkBuddy 等智能体客户端。内置 Web 管理控制台、独立的客户端 API Key、用量记录和 Docker 部署能力。
 
+原生生图在当前 app-server 提供方允许时可用。WorkBuddy 等声明 `show_widget` 或 `present_files` 的客户端默认在聊天中显示原图，使用短的本机图片地址代替大段 base64，不自动打开右侧预览；仅在明确要求下载、保存或复制时再导出原图。
+
 可使用 Node.js 或 Docker Compose 从本仓库安装。下文的部署命令会基于当前检出的源码构建服务。
 
 ## 目录
@@ -123,3 +125,5 @@ docker compose -f compose.yaml -f compose.local-auth.yaml ps
 ## 许可
 
 本项目基于 [MIT 许可证](../../LICENSE) 发布。版权所有 © 2026 umachanforever。
+
+支持兼容 `Bash` 文件工具的 WorkBuddy 可将生成原图自动保存到 `outputs`，在聊天中显示原生图片卡片；点击才预览，并由客户端提供保存、复制操作。其他客户端保持内嵌图片输出。详见[客户端接口](client-api.md)。

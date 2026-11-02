@@ -1,3 +1,5 @@
+import { nativeImageTool, nativeImageDownload } from "./image-delivery.js";
+import { usesImageFiles, type ImageFiles } from "./image-files.js";
 import type { InteractionBroker } from "../app-server/interactions.js";
 import { RpcError, type JsonRpcTransport } from "../app-server/json-rpc.js";
 import { IngressQueue, type IngressEvent } from "../sessions/ingress.js";
@@ -53,6 +55,8 @@ const RAW_RESPONSE_THREADS = new WeakMap<JsonRpcTransport, Set<string>>();
 
 /** Dependencies used by one Chat Completions request. */
 export interface ChatHandlerOptions {
+  /** Per-listener original-image storage and trusted loopback source origin. */
+  imageFiles?: { store: ImageFiles; origin: string } | undefined;
   interactions?: InteractionBroker | undefined;
   interactionOwner?: string | undefined;
   /** Request accounting observes normalized metadata, never message bodies. */
@@ -358,6 +362,12 @@ export async function execute(
   }
   // Constructed only once the attribution boundary is known, so no notification
   // can be normalized against a baseline this response did not begin from.
+  const imageSources: string[] = [];
+  const fileTool =
+    request.nativeImageDelivery !== false &&
+    request.generation?.outputSchema === undefined
+      ? nativeImageTool(request.dynamicTools)
+      : undefined;
   const normalizer = new EventNormalizer(
     usageBaseline,
     {
@@ -365,6 +375,19 @@ export async function execute(
       requestId: options.requestId,
     },
     request.generation?.outputSchema !== undefined,
+    options.imageFiles && usesImageFiles(request.dynamicTools)
+      ? (image) => {
+          const markdown = options.imageFiles!.store.publish(
+            image,
+            options.imageFiles!.origin,
+          );
+          if (!fileTool) return markdown;
+          imageSources.push(
+            markdown.trim().slice("![Generated image](".length, -1),
+          );
+          return "";
+        }
+      : undefined,
   );
   const events =
     (async function* streamExecution(): AsyncGenerator<NormalizedEvent> {
@@ -548,6 +571,24 @@ export async function execute(
               reason: collected.exitReason,
               pending_tool_batch: Boolean(capturedBatch),
             });
+        }
+        if (!failed && imageSources.length && fileTool && options.imageFiles) {
+          const call = nativeImageDownload(
+            imageSources,
+            options.imageFiles.origin,
+            fileTool,
+          );
+          capturedBatch = [...(capturedBatch ?? []), call];
+          // Synthetic file calls use the same durable correlation and injection
+          // path as provider calls, so the client's result can safely resume.
+          options.continuations.recordPendingTool(
+            responseId,
+            handle.threadId!,
+            binding,
+            capturedBatch,
+          );
+          yield normalizer.dynamicToolCall(call);
+          pendingFinishReason = "tool_calls";
         }
         // Usage is optional output. Persisting the boundary for the next
         // response is best-effort and must never fail a tool handoff that is

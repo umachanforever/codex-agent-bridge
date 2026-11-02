@@ -1,4 +1,4 @@
-import { generatedImage } from "./generated-image.js";
+import { generatedImage, type GeneratedImage } from "./generated-image.js";
 import type { JsonRpcTransport } from "../app-server/json-rpc.js";
 import { record } from "../core/canonical.js";
 import type { Logger } from "../core/logger.js";
@@ -209,6 +209,7 @@ export class EventNormalizer {
   readonly #generatedImages = new Set<string>();
   readonly #pendingImages = new Set<string>();
   readonly #structuredOutput: boolean;
+  readonly #imageMarkdown: ((image: GeneratedImage) => string) | undefined;
   readonly #activityCalls = new Map<string, NormalizedToolCall>();
   readonly #clientToolCalls = new Map<string, NormalizedToolCall>();
   readonly #reasoningSummaries = new Map<string, string>();
@@ -231,9 +232,11 @@ export class EventNormalizer {
     usageBaseline?: TokenUsageCounters,
     diagnostics?: NormalizerDiagnostics,
     structuredOutput = false,
+    imageMarkdown?: (image: GeneratedImage) => string,
   ) {
     this.#agentText = new AgentText(structuredOutput);
     this.#structuredOutput = structuredOutput;
+    this.#imageMarkdown = imageMarkdown;
     this.#usageBaseline = usageBaseline;
     this.#diagnostics = diagnostics;
   }
@@ -433,7 +436,10 @@ export class EventNormalizer {
         ...item,
         result: { mime: image.mime, bytes: image.bytes },
       });
-      return [activity, { delta: { content: image.markdown } }];
+      return [
+        activity,
+        { delta: { content: this.#imageMarkdown?.(image) ?? image.markdown } },
+      ];
     } catch (error) {
       if (error instanceof HttpError) return [{ terminalError: error }];
       throw error;

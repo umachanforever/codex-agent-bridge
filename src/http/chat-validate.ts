@@ -108,6 +108,8 @@ export interface ChatRequest {
   stream: boolean;
   includeUsage: boolean;
   dynamicTools: Array<Record<string, unknown>>;
+  /** Forced tool selection must not trigger synthetic image downloads. */
+  nativeImageDelivery?: boolean;
   previousResponseId?: string;
   policy: EffectivePolicy;
 }
@@ -282,6 +284,7 @@ export function validateRequest(
     stream: body.stream === true,
     includeUsage,
     dynamicTools,
+    nativeImageDelivery: choice == null || choice === "auto",
     requestPolicy,
     ...(requestPolicy.interactionId
       ? { interactionId: requestPolicy.interactionId }

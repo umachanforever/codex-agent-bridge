@@ -1,3 +1,7 @@
+import {
+  usesImageFiles,
+  IMAGE_FILE_INSTRUCTIONS,
+} from "../http/image-files.js";
 import { randomUUID } from "node:crypto";
 import { PolicyError, resolveEffectivePolicy } from "../core/policy.js";
 import {
@@ -38,6 +42,21 @@ export async function prepareCompletion(
       options.implicitToolContinuation,
     );
     await materializePdfParts(parsed.messages, options.signal);
+    if (options.imageFiles && usesImageFiles(parsed.dynamicTools)) {
+      // Restore only bytes already owned by this listener, never arbitrary URLs.
+      parsed.messages = options.imageFiles.store.restore(
+        parsed.messages,
+        options.imageFiles.origin,
+      );
+      const systems = parsed.messages.filter(
+        (message) => message.role === "system",
+      );
+      parsed.messages = [
+        ...systems,
+        { role: "system", content: IMAGE_FILE_INSTRUCTIONS },
+        ...parsed.messages.filter((message) => message.role !== "system"),
+      ];
+    }
     if (
       textOnly &&
       (parsed.stream ||
